@@ -20,6 +20,11 @@ export default defineConfig({
         ws: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
       },
+      // Proxy video beranotasi langsung dari backend (dev mode)
+      '/outputs': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
       // Teruskan WebSocket /ws/* ke backend (mode live)
       '/ws': {
         target: 'ws://localhost:8000',

@@ -1,16 +1,11 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-multipart==0.0.12
-ultralytics==8.3.0
-# Solver linear-assignment yang dipakai ByteTrack. WAJIB: seluruh pipeline SAPA
-# memakai model.track() untuk menjaga ID orang tetap melekat antar frame, dan
-# tanpa paket ini setiap panggilan track() gagal dengan "No module named 'lap'".
-# ultralytics tidak menariknya sebagai dependensi wajib, dan usaha auto-install
-# miliknya gagal di dalam venv (ia memanggil `pip` polos, bukan `.venv/bin/pip`),
-# jadi harus disebut eksplisit di sini.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.6
+python-multipart>=0.0.12
+ultralytics>=8.3.0
 lap>=0.5.12
-torch==2.4.1
-torchvision==0.19.1
-opencv-python-headless==4.10.0.84
-numpy==1.26.4
-scipy==1.13.1
+torch>=2.4.1
+torchvision>=0.19.1
+opencv-python-headless>=4.10.0.84
+numpy>=1.26.4
+scipy>=1.13.1
+
