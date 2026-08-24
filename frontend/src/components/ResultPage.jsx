@@ -154,12 +154,15 @@ export default function ResultPage({ result, onReset }) {
 
   const { timeline = [], summary = {}, annotated_video_url, video, fps, model_mode = {} } = result
 
-  // Dalam Docker, frontend nginx mem-proxy /api/ ke backend
   // Tambah cache-buster (timestamp) agar browser tidak load video lama yang di-cache
   const _ts = result._ts ?? Date.now()
+  // Di Docker: nginx proxy /api/ → backend, dan /outputs/ sudah di-serve langsung
+  // Di dev (Vite): ada proxy /outputs → backend:8000, dan /api → backend:8000 (strip /api)
+  // Jadi: gunakan /outputs/... langsung — work di kedua mode
   const videoSrc = annotated_video_url?.startsWith('/')
-    ? `/api${annotated_video_url}?t=${_ts}`
+    ? `${annotated_video_url}?t=${_ts}`
     : annotated_video_url
+
 
 
   function seekTo(t0, idx) {

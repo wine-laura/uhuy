@@ -41,11 +41,24 @@ from production.api import pasang_manager
 from production.manager import CameraManager
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format=LOG_FORMAT,
 )
 logger = logging.getLogger("sapa.app")
+
+def setup_loggers():
+    formatter = logging.Formatter(LOG_FORMAT)
+    for handler in logging.root.handlers:
+        handler.setFormatter(formatter)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "sapa.app", "pipeline.analyze", "pipeline.render", "pipeline.extract"):
+        l = logging.getLogger(name)
+        l.setLevel(logging.INFO)
+        for h in l.handlers:
+            h.setFormatter(formatter)
+
+setup_loggers()
 
 # ── Path ──────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -76,6 +89,7 @@ _state: dict = {
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model saat startup, bersihkan saat shutdown."""
+    setup_loggers()
     fall_pt = MODELS_DIR / "fall_head.pt"
     fall_json = MODELS_DIR / "fall_head.json"
     inter_pt = MODELS_DIR / "interaction_head.pt"

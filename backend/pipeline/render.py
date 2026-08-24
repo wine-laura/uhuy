@@ -179,14 +179,21 @@ def render(video_path: str, analysis_result: dict, output_path: str,
     fps = cap.get(cv2.CAP_PROP_FPS) or src_fps
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-    # Tulis ke file temp dulu (mp4v codec untuk kompatibilitas)
+    # Coba codec H.264 (avc1) agar langsung bisa diputar browser tanpa ffmpeg
+    # Fallback ke mp4v jika avc1 tidak didukung platform ini
     temp_path = str(output_path) + ".tmp.mp4"
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    out = cv2.VideoWriter(temp_path, fourcc, fps, (width, height))
+    fourcc_h264 = cv2.VideoWriter_fourcc(*"avc1")
+    out = cv2.VideoWriter(temp_path, fourcc_h264, fps, (width, height))
+
+    if not out.isOpened():
+        # Fallback ke mp4v, akan di-re-encode ffmpeg setelahnya
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(temp_path, fourcc, fps, (width, height))
 
     if not out.isOpened():
         cap.release()
         raise RuntimeError("VideoWriter gagal dibuka. Periksa path output dan codec.")
+
 
     logger.info(f"Merender {total} frame ke {Path(output_path).name}...")
 
