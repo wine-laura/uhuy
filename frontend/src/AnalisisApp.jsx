@@ -10,19 +10,7 @@ import JamLangsung from './components/JamLangsung.jsx'
    Dipakai di route /analisis
 ───────────────────────────────────────────────────────────────────────────── */
 
-/* Logo kerangka SVG — dipakai di navbar */
-function SkeletonLogo() {
-  return (
-    <svg width="20" height="26" viewBox="0 0 20 26" fill="none" aria-hidden="true">
-      <circle cx="10" cy="3.5" r="2.5" stroke="white" strokeWidth="1.8" />
-      <line x1="10" y1="6"  x2="10" y2="14" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-      <line x1="10" y1="9"  x2="4"  y2="13" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-      <line x1="10" y1="9"  x2="16" y2="13" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-      <line x1="10" y1="14" x2="7"  y2="22" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-      <line x1="10" y1="14" x2="13" y2="22" stroke="white" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  )
-}
+
 
 export default function AnalisisApp() {
   const navigate = useNavigate()
@@ -117,7 +105,7 @@ export default function AnalisisApp() {
             aria-label="Kembali ke halaman utama"
           >
             <div className="navbar-logo">
-              <SkeletonLogo />
+              <img src="/sapa.png" alt="SAPA Logo" />
             </div>
             <div>
               <div className="navbar-title">SAPA</div>

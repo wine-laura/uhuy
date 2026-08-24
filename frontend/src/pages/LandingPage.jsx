@@ -268,18 +268,15 @@ function LandingNav({ onCTA, onLive }) {
       {/* Brand */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
         <div style={{
-          width: 32, height: 32, background: 'rgba(255,255,255,0.18)',
-          border: '1.5px solid rgba(255,255,255,0.3)',
-          borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 36, height: 36, borderRadius: '50%',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          overflow: 'hidden',
+          background: '#ffffff',
+          padding: 3,
+          boxShadow: '0 2px 6px rgba(0, 0, 0, 0.12)',
+          border: '1.5px solid rgba(255, 255, 255, 0.4)',
         }}>
-          <svg width="14" height="19" viewBox="0 0 14 19" fill="none" aria-hidden="true">
-            <circle cx="7" cy="2.5" r="2" stroke="white" strokeWidth="1.5" />
-            <line x1="7" y1="4.5" x2="7" y2="9.5" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="7" y1="6.5" x2="2.5" y2="9" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="7" y1="6.5" x2="11.5" y2="9" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="7" y1="9.5" x2="4.5" y2="15" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="7" y1="9.5" x2="9.5" y2="15" stroke="white" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
+          <img src="/sapa.png" alt="SAPA Logo" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
         </div>
         <span style={{
           fontFamily: "'Instrument Serif', Georgia, serif",
