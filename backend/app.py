@@ -227,7 +227,8 @@ def health():
     }
 
 
-@app.get("/api/status")
+@app.get("/status")                # lewat proxy frontend (/api dibuang)
+@app.get("/api/status")            # akses langsung ke backend
 def api_status():
     """
     Status ketersediaan model untuk ditampilkan di frontend.
@@ -243,6 +244,11 @@ def api_status():
     }
 
 
+# Didaftarkan di dua path. Proxy frontend (nginx `proxy_pass .../` dan Vite
+# `rewrite`) MEMBUANG prefiks /api, jadi permintaan browser ke /api/preset tiba
+# di sini sebagai /preset. Path "/api/preset" dipertahankan agar akses langsung
+# ke backend (curl, /docs) tetap bekerja seperti /api/status.
+@app.get("/preset")
 @app.get("/api/preset")
 def api_preset():
     """
@@ -269,7 +275,8 @@ def api_preset():
     }
 
 
-@app.post("/api/rethreshold")
+@app.post("/rethreshold")          # lewat proxy frontend (/api dibuang)
+@app.post("/api/rethreshold")      # akses langsung ke backend
 def api_rethreshold(payload: dict = Body(...)):
     """
     Hitung ulang kejadian jatuh dari fitur jendela yang SUDAH dihitung.
