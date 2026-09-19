@@ -1,9 +1,9 @@
 """
 pipeline/normalize.py — SAPA
 
-Normalisasi pose sesuai PERSIS dengan inference.py asli (Cell 3 Colab):
-  - origin  = titik tengah pinggul PER FRAME  (bukan mean global)
-  - skala   = panjang torso PER FRAME, di-clip minimum 1e-3
+Normalisasi pose sesuai training multi-angle (train_fall_threshold_sweep_v2.py CELL 2):
+  - origin  = titik tengah pinggul FRAME PERTAMA (anchor tetap sepanjang window)
+  - skala   = panjang torso FRAME PERTAMA, di-clip minimum 1e-3
   - fill_lowconf_frames(): ganti frame dengan keypoint hilang dari frame terdekat yang valid
   - resample_fps(): interpolasi linear temporal
   - make_windows(): sliding window dengan edge-padding jika terlalu pendek
@@ -54,10 +54,19 @@ def fill_lowconf_frames(seq: np.ndarray, th: float = 0.2) -> np.ndarray:
 
 def normalize_pose(seq: np.ndarray) -> np.ndarray:
     """
-    Normalisasi pose PER FRAME (sesuai inference.py asli, Cell 3):
-      - origin per frame = titik tengah pinggul frame itu
-      - skala per frame  = panjang torso frame itu (shoulder_center - hip_center)
+    Normalisasi pose dengan ANCHOR FRAME PERTAMA (sesuai kode training
+    multi-angle, train_fall_threshold_sweep_v2.py CELL 2):
+      - origin = titik tengah pinggul pada frame PERTAMA
+      - skala  = panjang torso pada frame PERTAMA, clip minimum 1e-3
       - confidence tidak diubah
+
+    KENAPA BUKAN PER-FRAME (ini sumber bug lama):
+    Versi sebelumnya memusatkan SETIAP frame ke pinggulnya masing-masing.
+    Akibatnya pinggul selalu berada di (0,0) di semua frame, sehingga
+    perpindahan badan antar-frame — justru sinyal utama sebuah kejatuhan —
+    ikut terhapus dari input model. Model hanya melihat perubahan postur
+    relatif, bukan tubuh yang turun. Dengan anchor frame pertama, gerakan
+    jatuh tetap terlihat sebagai pergeseran terhadap posisi awal.
 
     seq: [T, 17, 3]  (x, y, confidence) koordinat piksel mentah
     return: [T, 17, 3] dinormalisasi
@@ -66,17 +75,16 @@ def normalize_pose(seq: np.ndarray) -> np.ndarray:
     xy   = seq[:, :, :2]        # [T, 17, 2]
     conf = seq[:, :, 2:3]       # [T, 17, 1]
 
-    # Titik tengah pinggul per frame: [T, 2]
-    hip = (xy[:, L_HIP] + xy[:, R_HIP]) / 2.0
-    # Titik tengah bahu per frame: [T, 2]
-    sho = (xy[:, L_SHOULDER] + xy[:, R_SHOULDER]) / 2.0
+    # Titik tengah pinggul & bahu pada FRAME PERTAMA saja: [2]
+    hip0 = (xy[0, L_HIP] + xy[0, R_HIP]) / 2.0
+    sho0 = (xy[0, L_SHOULDER] + xy[0, R_SHOULDER]) / 2.0
 
-    # Panjang torso per frame: [T, 1] — clip min 1e-3 (sesuai inference.py)
-    torso = np.linalg.norm(sho - hip, axis=-1, keepdims=True)   # [T, 1]
-    torso = np.clip(torso, 1e-3, None)
+    # Panjang torso frame pertama — skalar, clip min 1e-3
+    torso0 = float(np.linalg.norm(sho0 - hip0))
+    torso0 = max(torso0, 1e-3)
 
-    # Translate ke hip center, skala per frame
-    xy_norm = (xy - hip[:, None, :]) / torso[:, None, :]
+    # Translate ke hip frame pertama, skala tunggal untuk seluruh sekuens
+    xy_norm = (xy - hip0[None, None, :]) / torso0
 
     return np.concatenate([xy_norm, conf], axis=-1)
 
@@ -135,8 +143,16 @@ def build_windows_for_heads(
 ) -> dict:
     """
     Pipeline lengkap satu track orang:
-      fill_lowconf → normalize → resample → window
+      fill_lowconf → resample → window → normalize PER JENDELA
       → siapkan input untuk Kepala Jatuh & Kepala Interaksi
+
+    URUTAN PENTING: normalisasi dilakukan SESUDAH windowing, sekali untuk
+    tiap jendela. Anchor "frame pertama" berarti frame pertama JENDELA ITU,
+    bukan frame pertama seluruh track — sama seperti saat training, di mana
+    tiap sampel window dinormalisasi berdiri sendiri. Kalau seluruh track
+    dinormalisasi dengan satu anchor, jendela di menit ke-2 akan diukur
+    relatif terhadap posisi orang di detik ke-0 dan menghasilkan koordinat
+    yang jauh di luar rentang yang pernah dilihat model saat training.
 
     raw_seq_xyc: [T, 17, 3] koordinat piksel MENTAH dari YOLOv8-pose
 
@@ -150,18 +166,18 @@ def build_windows_for_heads(
     # 1. Isi frame yang keypoint-nya hilang/rendah confidence
     raw_filled = fill_lowconf_frames(raw)
 
-    # 2. Normalisasi per-frame (hip-center + torso-scale)
-    norm_seq = normalize_pose(raw_filled)                        # [T, 17, 3]
+    # 2. Resample ke dst_fps (masih koordinat piksel mentah)
+    raw_resampled = resample_fps(raw_filled, src_fps, dst_fps)   # [T', 17, 3]
 
-    # 3. Resample ke dst_fps
-    norm_resampled = resample_fps(norm_seq, src_fps, dst_fps)    # [T', 17, 3]
-    raw_resampled  = resample_fps(raw_filled, src_fps, dst_fps)  # [T', 17, 3]
+    # 3. Sliding window di ruang mentah
+    raw_windows = make_windows(raw_resampled, window, stride)    # [W, window, 17, 3]
 
-    # 4. Sliding window
-    norm_windows = make_windows(norm_resampled, window, stride)  # [W, window, 17, 3]
-    raw_windows  = make_windows(raw_resampled,  window, stride)  # [W, window, 17, 3]
+    W = raw_windows.shape[0]
 
-    W = norm_windows.shape[0]
+    # 4. Normalisasi PER JENDELA — anchor = frame pertama jendela tsb
+    norm_windows = np.stack(
+        [normalize_pose(raw_windows[w]) for w in range(W)], axis=0
+    )                                                            # [W, window, 17, 3]
 
     # 5. Reshape ke input shape masing-masing kepala
     # Fall: 12 sendi × (x,y) = 24 channel

@@ -26,8 +26,9 @@ import shutil
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +36,7 @@ from fastapi.staticfiles import StaticFiles
 from pipeline.models import load_head
 from pipeline.analyze import analyze
 from pipeline.render import render
+from pipeline import thresholds as TH
 from live_server import router as live_router
 from production.api import router as produksi_router, ws_router as produksi_ws_router
 from production.api import pasang_manager
@@ -241,6 +243,93 @@ def api_status():
     }
 
 
+@app.get("/api/preset")
+def api_preset():
+    """
+    Daftar preset ambang jatuh untuk panel Setting di UI.
+
+    Semua preset memakai MODEL YANG SAMA — yang berbeda hanya lapisan
+    keputusan. Tidak perlu bobot terpisah per mode.
+    """
+    return {
+        "default": TH.PRESET_DEFAULT,
+        "preset": [
+            {"id": pid, **{k: v for k, v in p.items()}}
+            for pid, p in TH.PRESETS.items()
+        ],
+        "batas": {
+            "fall_thr":   {"min": 0.30, "max": 0.95, "step": 0.05},
+            "fall_angle": {"min": 0,    "max": 80,   "step": 5},
+            "fall_speed": {"min": 0,    "max": 10,   "step": 0.25},
+        },
+        "catatan": (
+            "Kecepatan dimatikan secara default karena pada evaluasi tidak "
+            "meningkatkan akurasi; disediakan untuk eksperimen."
+        ),
+    }
+
+
+@app.post("/api/rethreshold")
+def api_rethreshold(payload: dict = Body(...)):
+    """
+    Hitung ulang kejadian jatuh dari fitur jendela yang SUDAH dihitung.
+
+    Ini yang membuat panel Setting terasa instan: ekstraksi pose dan inferensi
+    model — bagian paling lambat — tidak diulang sama sekali. Frontend mengirim
+    balik "fall_cache" dari respons /analyze beserta ambang baru, dan yang
+    terjadi di sini hanya perbandingan angka.
+
+    Body: {
+      "fall_cache": [{track_id, t0, t1, prob, sudut_torso, kecepatan}, ...],
+      "preset": "prob_sudut" | ... | "custom",
+      "fall_thr": float|null, "fall_angle": float|null, "fall_speed": float|null
+    }
+    """
+    cache = payload.get("fall_cache") or []
+    if not isinstance(cache, list):
+        raise HTTPException(status_code=400, detail="fall_cache harus berupa list.")
+
+    ambang = TH.resolve(
+        payload.get("preset", TH.PRESET_DEFAULT),
+        fall_thr=payload.get("fall_thr"),
+        fall_angle=payload.get("fall_angle"),
+        fall_speed=payload.get("fall_speed"),
+    )
+
+    timeline = []
+    for win in cache:
+        try:
+            prob  = float(win["prob"])
+            angle = float(win.get("sudut_torso", 0.0))
+            speed = float(win.get("kecepatan", 0.0))
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        if TH.is_fall(prob, angle, speed,
+                      ambang["fall_thr"], ambang["fall_angle"], ambang["fall_speed"]):
+            timeline.append({
+                "tipe": "jatuh",
+                "t0": float(win.get("t0", 0.0)),
+                "t1": float(win.get("t1", 0.0)),
+                "skor": prob,
+                "sudut_torso": angle,
+                "kecepatan": speed,
+                "track_id": int(win.get("track_id", 0)),
+            })
+
+    timeline.sort(key=lambda e: e["t0"])
+
+    return {
+        "ambang": ambang,
+        "timeline": timeline,
+        "summary": {
+            "jatuh": len(timeline),
+            "total_window": len(cache),
+            "total_track": len(set(e["track_id"] for e in timeline)),
+        },
+    }
+
+
 @app.post("/analyze")
 async def analyze_video(
     file: UploadFile = File(..., description="File video .mp4"),
@@ -253,6 +342,13 @@ async def analyze_video(
             "'both' (keduanya aktif, default)"
         ),
     ),
+    preset: str = Form(
+        TH.PRESET_DEFAULT,
+        description="Preset ambang jatuh: prob_sudut | prob_saja | prob_kecepatan | prob_sudut_kecepatan | custom",
+    ),
+    fall_thr: Optional[float] = Form(None, description="Override ambang probabilitas (0–1)"),
+    fall_angle: Optional[float] = Form(None, description="Override ambang sudut torso (°); 0 = matikan"),
+    fall_speed: Optional[float] = Form(None, description="Override ambang kecepatan; 0 = matikan"),
 ):
     """
     Analisis klip video CCTV.
@@ -291,14 +387,21 @@ async def analyze_video(
     # Ambil fall_joints dari config model jika tersedia
     fall_joints = _state["fall_cfg"].get("fall_joints", list(range(5, 17)))
 
+    # Ambang keputusan jatuh: preset + override opsional dari panel Setting
+    ambang = TH.resolve(preset, fall_thr=fall_thr, fall_angle=fall_angle, fall_speed=fall_speed)
+    logger.info(f"Ambang jatuh: {ambang}")
+
 
 
     cfg = {
         "run_fall": run_fall,
         "run_interaction": run_interaction,
-        # Threshold deteksi jatuh
-        "fall_thr":    0.80,
-        "fall_angle":  35.0,        # turunkan dari 55° agar tidak false positive
+        # Ambang deteksi jatuh — default hasil sweep, lihat pipeline/thresholds.py.
+        # Nilai lama (0,80 / 35°) terlalu ketat: keduanya harus terpenuhi
+        # sekaligus, sehingga banyak kejatuhan nyata lolos tanpa terdeteksi.
+        "fall_thr":    ambang["fall_thr"],
+        "fall_angle":  ambang["fall_angle"],
+        "fall_speed":  ambang["fall_speed"],
         "fall_confirm": True,
         "fall_joints": fall_joints,
         # MERL classes: 0=background,1=reach,2=retract,3=hand_in_shelf,4=inspect_product,5=inspect_shelf
@@ -382,6 +485,10 @@ async def analyze_video(
                 "butuh_bantuan": n_bantuan,
                 "total_track": len(set(e["track_id"] for e in result["timeline"])),
             },
+            # Untuk panel Setting: ambang yang dipakai + fitur per jendela,
+            # supaya frontend bisa minta /api/rethreshold tanpa unggah ulang.
+            "ambang": ambang,
+            "fall_cache": result.get("fall_cache", []),
         })
 
     except Exception as e:

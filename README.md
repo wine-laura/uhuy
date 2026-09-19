@@ -285,7 +285,9 @@ Sudah diverifikasi terhadap `Train_fall.ipynb` dan `Kepala Interaksi.ipynb`:
 | 12 sendi (5–16) × x,y untuk Kepala Jatuh | ✅ identik |
 | 17 sendi × x,y,conf untuk Kepala Interaksi | ✅ identik |
 | `inspect_idx = [4, 5]` | ✅ diambil dari config model |
-| `normalize_pose` / `resample_fps` / `make_windows` | ✅ sesuai `Inference.ipynb` |
+| `resample_fps` / `make_windows` | ✅ sesuai `Inference.ipynb` |
+| `normalize_pose` (anchor frame pertama) | ✅ sesuai `train_fall_threshold_sweep_v2.py` CELL 2 |
+| `window_torso_angle` (maks `atan2`) | ✅ sesuai `geom_features()` |
 
 **Pernah salah, sudah diperbaiki:** `BiLSTMHead.forward()` memakai hidden state
 terakhir padahal training memakai mean-pooling. Keduanya memakai parameter yang
@@ -298,13 +300,68 @@ Verifikasi ulang kapan saja:
 cd backend && python tests/uji_arsitektur.py
 ```
 
-### 🔧 Ambang perlu disetel ulang
+### ✅ Ambang sudah disetel ulang
 
-Ambang `fall_thr = 0.80` dan `fall_angle` di `app.py` disetel **terhadap
-forward-pass yang salah**. Setelah perbaikan, sebaran probabilitas bergeser
-turun — pada uji sintetis, jendela yang melewati `fall_thr = 0.80` berkurang
-dari 143 menjadi 17 per 2000. Jalankan ulang klip uji dan setel ulang ambangnya
-sebelum submission final.
+Ambang lama (`fall_thr = 0.80`, `fall_angle = 35°`) sudah diganti dengan hasil
+sweep pada model multi-angle: **`0.65` / `5°` / kecepatan mati**. Sumber
+kebenarannya ada di `backend/pipeline/thresholds.py` dan dipakai bersama oleh
+jalur unggah-klip, mode Live, dan mode Produksi.
+
+0,80 terlalu ketat. Karena syaratnya digabung dengan DAN, sebuah kejatuhan harus
+lolos ambang probabilitas **dan** sudut sekaligus — efek ketatnya berlipat, dan
+banyak kejatuhan nyata tidak pernah muncul di timeline.
+
+### 🔧 Perbaikan model deteksi jatuh (multi-angle)
+
+Tiga hal diperbaiki bersamaan; dua di antaranya adalah *train–serving skew*
+yang tidak menimbulkan error apa pun, hanya prediksi yang meleset:
+
+1. **Bobot baru** — `fall_head.pt` dilatih ulang dengan augmentasi 15 sudut
+   kamera (sebelumnya 4), 89.865 window. CV 5-fold: macroF1 0,876 ± 0,020.
+
+2. **`normalize_pose` — anchor frame pertama, bukan per-frame.** Versi lama
+   memusatkan *setiap* frame ke pinggulnya sendiri, sehingga pinggul selalu
+   berada di (0,0) dan perpindahan tubuh — sinyal utama sebuah kejatuhan —
+   terhapus dari input model. Terukur: pada klip jatuh sintetis, pergerakan
+   pinggul setelah normalisasi lama = **0,0000**; setelah perbaikan = **1,71**
+   panjang torso. Normalisasi kini juga dilakukan **per jendela** (sesudah
+   windowing), sama seperti saat training.
+
+3. **`window_torso_angle` — maks sepanjang window, bukan rata-rata 5 frame
+   terakhir.** Kejatuhan adalah puncak singkat; diratakan bersama frame tegak
+   di sekitarnya, nilainya turun di bawah ambang. Rumusnya juga disamakan ke
+   `degrees(atan2(|dx|,|dy|))` (rentang 0–90°) karena ambang hasil sweep
+   dikalibrasi pada rumus itu.
+
+### 🎛️ Panel Setting (coba-coba ambang tanpa proses ulang)
+
+Di halaman hasil ada panel **Setting Deteksi Jatuh**: 4 preset hasil sweep +
+mode custom dengan tiga slider, lalu tombol **Proses ulang**.
+
+Yang membuatnya instan: backend menyimpan fitur tiap jendela (probabilitas,
+sudut, kecepatan) di `fall_cache` saat analisis. `POST /api/rethreshold` hanya
+membandingkan angka-angka itu dengan ambang baru — **ekstraksi pose dan
+inferensi model tidak pernah diulang.**
+
+| Mode | T_prob | T_angle | T_speed | recall | precision | F1 |
+|---|---|---|---|---|---|---|
+| **Prob + Sudut** (default) | 0,65 | 5° | — | 0,841 | 0,873 | **0,857** |
+| Prob saja | 0,65 | — | — | 0,842 | 0,872 | 0,856 |
+| Prob + Kecepatan | 0,45 | — | 2,13 | 0,764 | 0,864 | 0,811 |
+| Prob + Sudut + Kecepatan | 0,45 | 5° | 2,13 | 0,764 | 0,864 | 0,811 |
+
+Keempat preset memakai **bobot model yang sama** — yang berbeda hanya lapisan
+keputusan, jadi tidak perlu menyimpan beberapa file `.pt`.
+
+Kecepatan dimatikan secara default: ia justru **menurunkan** recall (0,841 →
+0,764) karena kecepatan gerak jatuh dan normal nyaris sama (5,12 vs 4,44).
+Tetap disediakan agar tim bisa memverifikasi sendiri.
+
+Endpoint terkait:
+```
+GET  /api/preset        → daftar preset + batas slider
+POST /api/rethreshold   → hitung ulang kejadian dari fall_cache
+```
 
 ---
 

@@ -41,7 +41,8 @@ import cv2
 import numpy as np
 import torch
 
-from pipeline.geometry import is_dwell, window_torso_angle
+from pipeline import thresholds as TH
+from pipeline.geometry import is_dwell, window_torso_angle, window_torso_speed
 from pipeline.models import predict_proba
 from pipeline.normalize import build_windows_for_heads
 from pipeline.render import (
@@ -328,16 +329,21 @@ class CameraWorker(threading.Thread):
                 proba = predict_proba(self.fall_model, x).cpu().numpy()
             skor = float(proba[0, _IDX_JATUH])
 
-            if skor >= p.fall_thr:
-                # Konfirmasi geometri dari koordinat MENTAH (bukan yang dinormalisasi)
-                sudut = window_torso_angle(raw)
-                if sudut >= p.fall_angle:
-                    self._ajukan(
-                        "jatuh", jendela.track_id, skor, t0, t1,
-                        {"sudut_torso": round(sudut, 1),
-                         "src_fps": round(jendela.src_fps, 1),
-                         "n_frame": jendela.n_frames},
-                    )
+            # Konfirmasi geometri dari koordinat MENTAH (bukan yang dinormalisasi).
+            # Aturan gabungan dipusatkan di thresholds.is_fall() agar mode
+            # produksi, mode live, dan jalur unggah-klip memutuskan dengan
+            # logika yang sama persis.
+            sudut = window_torso_angle(raw)
+            kecepatan = window_torso_speed(raw, fps=15.0)
+            if TH.is_fall(skor, sudut, kecepatan,
+                          p.fall_thr, p.fall_angle, getattr(p, "fall_speed", 0.0)):
+                self._ajukan(
+                    "jatuh", jendela.track_id, skor, t0, t1,
+                    {"sudut_torso": round(sudut, 1),
+                     "kecepatan": round(kecepatan, 2),
+                     "src_fps": round(jendela.src_fps, 1),
+                     "n_frame": jendela.n_frames},
+                )
 
         # ── Kepala Interaksi — hanya kamera rak ───────────────────────────────
         if self._inter_aktif():

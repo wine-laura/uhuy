@@ -11,8 +11,12 @@ Urutan pipeline wajib (sesuai spesifikasi):
        ├── interaction_input [W,45,51] (17 sendi × x,y,conf — untuk Kepala Interaksi)
        └── raw_windows     [W,45,17,3] (koordinat MENTAH — untuk lapisan geometri)
   3. predict_proba()           → probabilitas per jendela
-  4. Lapisan geometri          → konfirmasi jatuh (torso_angle) + dwell (is_dwell)
-  5. detect_events             → timeline
+  4. Lapisan geometri          → sudut torso + kecepatan torso + dwell (is_dwell)
+  5. Lapisan keputusan         → thresholds.is_fall() → timeline
+
+Keputusan jatuh sengaja dipisah dari inferensi (lihat pipeline/thresholds.py):
+fitur per jendela disimpan di "fall_cache" supaya ambang bisa diubah-ubah
+lewat panel Setting tanpa mengulang ekstraksi pose.
 
 PENTING: Geometri (torso_angle, is_dwell) SELALU menggunakan raw_windows,
          bukan yang sudah dinormalisasi.
@@ -25,8 +29,9 @@ from typing import Optional
 
 from .extract import extract_poses
 from .normalize import build_windows_for_heads
-from .geometry import is_dwell, window_torso_angle, INTERACTION_CLASS_NAMES
+from .geometry import is_dwell, window_torso_angle, window_torso_speed, INTERACTION_CLASS_NAMES
 from .models import predict_proba, BiLSTMHead
+from . import thresholds as TH
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +80,8 @@ def analyze(
 
     if not tracks:
         logger.warning("Tidak ada track valid ditemukan di video.")
-        return {"timeline": [], "frame_annotations": {}, "src_fps": 30.0, "total_frames": 0}
+        return {"timeline": [], "frame_annotations": {}, "src_fps": 30.0,
+                "total_frames": 0, "fall_cache": [], "ambang_dipakai": {}}
 
     first = next(iter(tracks.values()))
     src_fps = first["fps"]
@@ -94,9 +100,15 @@ def analyze(
     if camera_type == "rak":
         run_fall = False
         logger.info("camera_type='rak' → deteksi jatuh DIMATIKAN (kamera top-down).")
-    fall_thr    = float(cfg.get("fall_thr", 0.80))
-    fall_ang    = float(cfg.get("fall_angle", 35.0))   # turunkan dari 55°
+    # Ambang keputusan jatuh — default dari hasil sweep (pipeline/thresholds.py).
+    # fall_confirm dipertahankan demi kompatibilitas: False = matikan syarat
+    # geometri, setara menyetel sudut & kecepatan ke 0.
     fall_confirm= bool(cfg.get("fall_confirm", True))
+    fall_thr    = float(cfg.get("fall_thr",   TH.FALL_THR_DEFAULT))
+    fall_ang    = float(cfg.get("fall_angle", TH.FALL_ANGLE_DEFAULT))
+    fall_spd    = float(cfg.get("fall_speed", TH.FALL_SPEED_DEFAULT))
+    if not fall_confirm:
+        fall_ang, fall_spd = 0.0, 0.0
     # MERL label (dari geometry.py INTERACTION_CLASS_NAMES):
     # 0=background, 1=reach, 2=retract, 3=hand_in_shelf, 4=inspect_product, 5=inspect_shelf
     # Default [4, 5] mengikuti INSPECT_IDX di Kepala Interaksi.ipynb — hanya
@@ -116,6 +128,9 @@ def analyze(
 
     timeline: list = []
     frame_annotations: dict = {}
+    # Cache fitur per jendela — dipakai endpoint /rethreshold agar percobaan
+    # ambang tidak perlu mengekstrak pose ulang (bagian paling lambat).
+    fall_cache: list = []
 
     for track_id, tdata in tracks.items():
         frames = tdata["frames"]   # [(frame_idx, kps[17,3])]
@@ -177,20 +192,31 @@ def analyze(
             })
 
         # 5a. Deteksi kejadian JATUH
+        # Fitur tiap jendela (prob, sudut, kecepatan) dihitung SEKALI dan
+        # disimpan di fall_cache; keputusannya sendiri murni perbandingan
+        # ambang, jadi bisa diulang cepat tanpa menyentuh video lagi.
         if fall_probs is not None:
             for w, (wt0, wt1) in enumerate(window_times):
-                prob = float(fall_probs[w, _FALL_CLASS_IDX])
-                if prob >= fall_thr:
-                    angle = window_torso_angle(raw_windows[w])
-                    if not fall_confirm or angle >= fall_ang:
-                        timeline.append({
-                            "tipe": "jatuh",
-                            "t0": wt0,
-                            "t1": wt1,
-                            "skor": prob,
-                            "sudut_torso": angle,
-                            "track_id": int(track_id),
-                        })
+                prob  = float(fall_probs[w, _FALL_CLASS_IDX])
+                angle = window_torso_angle(raw_windows[w])
+                speed = window_torso_speed(raw_windows[w], fps=dst_fps)
+
+                fall_cache.append({
+                    "track_id": int(track_id),
+                    "t0": float(wt0), "t1": float(wt1),
+                    "prob": prob, "sudut_torso": angle, "kecepatan": speed,
+                })
+
+                if TH.is_fall(prob, angle, speed, fall_thr, fall_ang, fall_spd):
+                    timeline.append({
+                        "tipe": "jatuh",
+                        "t0": wt0,
+                        "t1": wt1,
+                        "skor": prob,
+                        "sudut_torso": angle,
+                        "kecepatan": speed,
+                        "track_id": int(track_id),
+                    })
 
         # 5b. Deteksi kejadian BUTUH BANTUAN
         if inter_probs is not None:
@@ -272,4 +298,9 @@ def analyze(
         "frame_annotations": frame_annotations,
         "src_fps": src_fps,
         "total_frames": total_frames,
+        # Fitur per jendela untuk percobaan ambang tanpa ekstraksi pose ulang
+        "fall_cache": fall_cache,
+        "ambang_dipakai": {
+            "fall_thr": fall_thr, "fall_angle": fall_ang, "fall_speed": fall_spd,
+        },
     }
