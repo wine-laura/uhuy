@@ -24,6 +24,8 @@ import threading
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
+from pipeline import thresholds as TH
+
 logger = logging.getLogger(__name__)
 
 JENIS_LORONG = "lorong"
@@ -83,8 +85,12 @@ class CameraProfile:
     track_ttl_seconds: float = 5.0   # track tak terlihat selama ini → dilupakan
 
     # ── Ambang Kepala Jatuh (dipakai bila jenis="lorong") ─────────────────────
-    fall_thr: float = 0.80
-    fall_angle: float = 35.0
+    # Default mengikuti hasil sweep di pipeline/thresholds.py — sengaja tidak
+    # di-hardcode ulang agar profil kamera produksi tidak menyimpang dari
+    # jalur unggah-klip. fall_speed=0 berarti syarat kecepatan dimatikan.
+    fall_thr: float = TH.FALL_THR_DEFAULT
+    fall_angle: float = TH.FALL_ANGLE_DEFAULT
+    fall_speed: float = TH.FALL_SPEED_DEFAULT
 
     # ── Ambang Kepala Interaksi (dipakai bila jenis="rak") ────────────────────
     inspect_thr: float = 0.40

@@ -35,6 +35,7 @@ import cv2
 import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from pipeline import thresholds as TH
 from production.buffer import TrackWindowBuffer
 from production.worker import muat_yolo
 
@@ -46,9 +47,13 @@ router = APIRouter()
 # ── Konfigurasi (sama dengan analyze.py) ──────────────────────────────────────
 WINDOW_SIZE    = 45     # frame per jendela BiLSTM setelah resample (= 3 dtk @15fps)
 FPS_TUJUAN     = 15.0   # HARUS sama dengan saat training (fall_head.json: fps=15)
-FALL_THRESH    = float(os.getenv("FALL_THRESH",   0.55))
+# Ambang jatuh disamakan dengan jalur unggah-klip (pipeline/thresholds.py)
+# supaya satu kejadian yang sama tidak dinilai berbeda hanya karena masuk
+# lewat mode Live. Masih bisa ditimpa lewat env var untuk uji lapangan.
+FALL_THRESH    = float(os.getenv("FALL_THRESH",   TH.FALL_THR_DEFAULT))
+FALL_SPEED     = float(os.getenv("FALL_SPEED",    TH.FALL_SPEED_DEFAULT))
 DWELL_THRESH   = float(os.getenv("DWELL_THRESH",  0.60))
-TORSO_THRESH   = float(os.getenv("TORSO_THRESH",  45.0))  # derajat
+TORSO_THRESH   = float(os.getenv("TORSO_THRESH",  TH.FALL_ANGLE_DEFAULT))  # derajat
 INSPECT_THRESH = float(os.getenv("INSPECT_THRESH", 0.50))
 
 # Jendela analisis dalam DETIK. Browser mengirim frame ~5fps, tapi laju itu
@@ -103,7 +108,7 @@ def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head) -> lis
     konkurensi apa pun dan rawan deadlock saat beberapa jendela siap bersamaan.
     """
     from pipeline.normalize import build_windows_for_heads
-    from pipeline.geometry import window_torso_angle, is_dwell
+    from pipeline.geometry import window_torso_angle, window_torso_speed, is_dwell
     from pipeline.models import predict_proba
     import torch
 
@@ -128,16 +133,17 @@ def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head) -> lis
     if camera_type != "rak" and fall_head is not None:
         x = torch.from_numpy(masukan["fall_input"][-1:])
         skor = float(predict_proba(fall_head, x)[0, 2])       # kelas 2 = jatuh
-        if skor >= FALL_THRESH:
-            sudut = window_torso_angle(raw)
-            if sudut >= TORSO_THRESH:
-                kejadian.append({
-                    "type": "event", "tipe": "jatuh",
-                    "track_id": jendela.track_id,
-                    "t0": t0, "t1": t1,
-                    "skor": round(skor, 3),
-                    "sudut_torso": round(sudut, 1),
-                })
+        sudut = window_torso_angle(raw)
+        kecepatan = window_torso_speed(raw, fps=FPS_TUJUAN)
+        if TH.is_fall(skor, sudut, kecepatan, FALL_THRESH, TORSO_THRESH, FALL_SPEED):
+            kejadian.append({
+                "type": "event", "tipe": "jatuh",
+                "track_id": jendela.track_id,
+                "t0": t0, "t1": t1,
+                "skor": round(skor, 3),
+                "sudut_torso": round(sudut, 1),
+                "kecepatan": round(kecepatan, 2),
+            })
 
     # ── Kepala Interaksi — dimatikan untuk kamera lorong ──────────────────────
     if camera_type != "lorong" and interaction_head is not None:

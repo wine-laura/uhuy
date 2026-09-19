@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import PanelSetting from './PanelSetting.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────────
    ResultPage — video beranotasi + timeline kejadian + ringkasan statistik
@@ -152,7 +153,27 @@ export default function ResultPage({ result, onReset }) {
   const [activeIdx, setActiveIdx] = useState(null)
   const [videoError, setVideoError] = useState(false)
 
-  const { timeline = [], summary = {}, annotated_video_url, video, fps, model_mode = {} } = result
+  const {
+    timeline: timelineAwal = [], summary: summaryAwal = {},
+    annotated_video_url, video, fps, model_mode = {},
+    fall_cache = [], ambang,
+  } = result
+
+  /* Hasil "proses ulang" dari panel Setting menimpa timeline & ringkasan.
+     Kejadian butuh_bantuan tidak ikut dihitung ulang (panel ini khusus jatuh),
+     jadi kejadian jatuh yang baru digabung dengan kejadian bantuan yang lama. */
+  const [revisi, setRevisi] = useState(null)
+
+  const timeline = revisi
+    ? [...revisi.timeline, ...timelineAwal.filter(e => e.tipe !== 'jatuh')]
+        .sort((a, b) => a.t0 - b.t0)
+    : timelineAwal
+
+  const summary = revisi
+    ? { ...summaryAwal,
+        jatuh: revisi.summary?.jatuh ?? 0,
+        total_track: new Set(timeline.map(e => e.track_id)).size }
+    : summaryAwal
 
   // Tambah cache-buster (timestamp) agar browser tidak load video lama yang di-cache
   const _ts = result._ts ?? Date.now()
@@ -164,6 +185,11 @@ export default function ResultPage({ result, onReset }) {
     : annotated_video_url
 
 
+
+  function terimaRevisi(data) {
+    setRevisi(data)
+    setActiveIdx(null)   // indeks lama tidak lagi menunjuk kejadian yang sama
+  }
 
   function seekTo(t0, idx) {
     setActiveIdx(idx)
@@ -242,6 +268,16 @@ export default function ResultPage({ result, onReset }) {
         </button>
       </div>
 
+
+      {/* ── Panel Setting ambang jatuh ─────────────────────────────────── */}
+      {model_mode.fall && (
+        <PanelSetting
+          fallCache={fall_cache}
+          ambangAwal={ambang}
+          jumlahJatuh={summary.jatuh ?? 0}
+          onHasil={terimaRevisi}
+        />
+      )}
 
       {/* ── Ringkasan statistik ────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 36, flexWrap: 'wrap' }}>

@@ -108,13 +108,68 @@ def is_dwell(raw_window: np.ndarray, dwell_ratio: float = 0.3) -> bool:
 
 def window_torso_angle(raw_window: np.ndarray) -> float:
     """
-    Rata-rata sudut torso dari 5 frame terakhir jendela.
-    Lebih stabil untuk konfirmasi jatuh daripada hanya 1 frame.
+    Sudut torso MAKSIMUM sepanjang jendela (°), sesuai geom_features() di
+    kode training (train_fall_threshold_sweep_v2.py CELL 2):
 
-    raw_window: [T, 17, 3]
-    Returns: float sudut dalam derajat
+        sudut = max_t  degrees(atan2(|dx|, |dy|))
+        (dx, dy) = bahu_tengah - pinggul_tengah
+
+    Konvensi: 0° = tegak, 90° = rebah. Rentang hasil [0°, 90°].
+
+    KENAPA MAKS, BUKAN RATA-RATA (bug lama):
+    Versi sebelumnya merata-ratakan sudut 5 frame terakhir dan memakai
+    arccos terhadap vektor vertikal. Dua-duanya menyimpang dari training:
+      - Rata-rata meredam puncak sudut. Sebuah kejatuhan adalah PUNCAK
+        singkat; diratakan bersama frame tegak sebelum/sesudahnya, nilainya
+        turun di bawah ambang dan kejatuhan lolos tanpa terdeteksi.
+      - arccos menghasilkan rentang [0°, 180°] dan membedakan badan
+        condong ke depan vs ke belakang, sedangkan atan2(|dx|,|dy|)
+        memakai nilai mutlak sehingga simetris dan berhenti di 90°.
+    Ambang T_angle hasil sweep dikalibrasi pada rumus atan2 ini, jadi
+    memakai rumus lain membuat angka ambangnya tidak berarti.
+
+    raw_window: [T, 17, 3] koordinat piksel MENTAH
+    Returns: float sudut derajat [0, 90]
+    """
+    sho = (raw_window[:, _LEFT_SHOULDER, :2] + raw_window[:, _RIGHT_SHOULDER, :2]) / 2.0
+    hip = (raw_window[:, _LEFT_HIP, :2] + raw_window[:, _RIGHT_HIP, :2]) / 2.0
+    vec = sho - hip                                    # [T, 2]
+
+    angles = np.degrees(np.arctan2(np.abs(vec[:, 0]), np.abs(vec[:, 1])))
+    return float(np.max(angles))
+
+
+def window_torso_speed(raw_window: np.ndarray, fps: float = 15.0) -> float:
+    """
+    Kecepatan perubahan VEKTOR TORSO maksimum sepanjang jendela, sesuai
+    geom_features() di kode training:
+
+        kecepatan = max_t  norm(diff(vektor_torso)) * fps
+
+    Vektor torso = bahu_tengah - pinggul_tengah, dinormalisasi terhadap
+    panjang torso frame pertama supaya tidak bergantung jarak ke kamera.
+
+    CATATAN: dihitung dari perubahan VEKTOR TORSO, bukan dari pinggul.
+    Setelah normalisasi, pinggul frame pertama menjadi origin (~0), jadi
+    memakai pinggul sebagai sumber kecepatan akan salah.
+
+    Pada evaluasi, fitur ini TIDAK meningkatkan akurasi (kecepatan gerak
+    jatuh 5,12 vs normal 4,44 — bedanya tipis), sehingga dimatikan secara
+    default (T_speed=0). Disediakan untuk eksperimen lewat panel Setting.
+
+    raw_window: [T, 17, 3] koordinat piksel MENTAH
+    Returns: float kecepatan (satuan panjang-torso per detik)
     """
     T = raw_window.shape[0]
-    n_frames = min(5, T)
-    angles = [torso_angle(raw_window[t]) for t in range(T - n_frames, T)]
-    return float(np.mean(angles))
+    if T < 2:
+        return 0.0
+
+    sho = (raw_window[:, _LEFT_SHOULDER, :2] + raw_window[:, _RIGHT_SHOULDER, :2]) / 2.0
+    hip = (raw_window[:, _LEFT_HIP, :2] + raw_window[:, _RIGHT_HIP, :2]) / 2.0
+    vec = sho - hip                                    # [T, 2]
+
+    scale = max(float(np.linalg.norm(vec[0])), 1e-3)   # panjang torso frame pertama
+    vec_n = vec / scale
+
+    d = np.linalg.norm(np.diff(vec_n, axis=0), axis=1)  # [T-1]
+    return float(np.max(d) * fps)
