@@ -66,6 +66,9 @@ function Toggle({ checked, onChange, label, hint }) {
 }
 
 export default function PanelDeteksiOrang({ nilai, onUbah }) {
+  // Tertutup default supaya halaman unggah tetap ringkas. Dibuka otomatis
+  // sekali saja bila toko belum mendaftarkan seragam — supaya setup pertama
+  // tidak tersembunyi. Lihat muatSeragam().
   const [terbuka, setTerbuka]   = useState(false)
   const [batas, setBatas]       = useState(null)
   const [seragam, setSeragam]   = useState([])
@@ -91,14 +94,22 @@ export default function PanelDeteksiOrang({ nilai, onUbah }) {
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
       .then(d => { if (!batal && d.angkat) setBatas(d.angkat.batas) })
       .catch(() => {})
-    muatSeragam()
+    muatSeragam({ pertama: true })
     return () => { batal = true }
   }, [])
 
-  function muatSeragam() {
+  function muatSeragam({ pertama = false } = {}) {
     fetch('/api/seragam')
       .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then(d => { setSeragam(d.seragam ?? []); if (d.catatan) setCatatanS(d.catatan) })
+      .then(d => {
+        const daftar = d.seragam ?? []
+        setSeragam(daftar)
+        if (d.catatan) setCatatanS(d.catatan)
+        // Hanya pada pemuatan PERTAMA. Kalau dibuka tiap kali daftar kosong,
+        // panel akan membuka sendiri tepat setelah user menghapus seragam
+        // terakhirnya — terasa seperti UI melawan.
+        if (pertama && daftar.length === 0) setTerbuka(true)
+      })
       .catch(() => {})
   }
 

@@ -18,7 +18,8 @@ const COCO_SKELETON = [
 // Warna sama dengan render.py (tapi dalam format CSS)
 const C_NORMAL = 'rgba(80,180,80,0.9)'    // hijau — gerakan normal
 const C_FALL   = 'rgba(210,40,40,0.95)'   // merah — jatuh
-const C_HELP   = 'rgba(240,140,30,0.95)'  // oranye — butuh bantuan
+const C_HELP   = 'rgba(240,140,30,0.95)'  // oranye — butuh bantuan (dwell/pasif)
+const C_ANGKAT = 'rgba(200,60,200,0.95)'  // ungu  — angkat tangan (permintaan eksplisit)
 
 function buildWsUrl() {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -27,7 +28,10 @@ function buildWsUrl() {
 
 function trackColor(trackId, activeEvents) {
   const evs = activeEvents.filter(e => e.track_id === trackId)
+  // Jatuh selalu menang. Angkat tangan (sinyal aktif) dibedakan dari dwell
+  // supaya permintaan eksplisit terlihat berbeda saat demo.
   if (evs.some(e => e.tipe === 'jatuh'))         return C_FALL
+  if (evs.some(e => e.tipe === 'butuh_bantuan' && e.sinyal === 'aktif')) return C_ANGKAT
   if (evs.some(e => e.tipe === 'butuh_bantuan')) return C_HELP
   return C_NORMAL
 }
@@ -90,7 +94,9 @@ export default function LivePage() {
   const poseRef      = useRef({})    // mutable ref — tidak trigger re-render
   const eventsRef    = useRef([])
 
-  const [cameraType, setCameraType] = useState('lorong')
+  // Default 'both': satu kamera webcam biasanya menangkap lorong sekaligus
+  // area rak, dan operator tidak perlu memilih mana bahaya yang mau diabaikan.
+  const [cameraType, setCameraType] = useState('both')
   const [wsState, setWsState]       = useState('idle')
   const [events,  setEvents]        = useState([])
   const [errorMsg, setErrorMsg]     = useState('')
@@ -127,9 +133,12 @@ export default function LivePage() {
         const cx = nc > 0.25 ? nx : (kps[5][0] + kps[6][0]) / 2
         const cy = nc > 0.25 ? ny : (kps[5][1] + kps[6][1]) / 2
 
-        const hasFall = active.some(e => e.track_id === tid && e.tipe === 'jatuh')
-        const hasHelp = active.some(e => e.track_id === tid && e.tipe === 'butuh_bantuan')
-        const statusTxt = hasFall ? 'JATUH!' : hasHelp ? 'BUTUH BANTUAN' : 'Normal'
+        const hasFall   = active.some(e => e.track_id === tid && e.tipe === 'jatuh')
+        const hasAngkat = active.some(e => e.track_id === tid && e.tipe === 'butuh_bantuan' && e.sinyal === 'aktif')
+        const hasHelp   = active.some(e => e.track_id === tid && e.tipe === 'butuh_bantuan')
+        const statusTxt = hasFall ? 'JATUH!'
+          : hasAngkat ? 'ANGKAT TANGAN'
+          : hasHelp ? 'BUTUH BANTUAN' : 'Normal'
         drawLabel(ctx, `ID:${tid}  ${statusTxt}`, cx - 30, cy - 12, col)
       }
 
@@ -372,6 +381,7 @@ export default function LivePage() {
               {[
                 { color: C_NORMAL, label: 'Hijau = Gerakan normal' },
                 { color: C_HELP,   label: 'Oranye = Butuh bantuan' },
+                { color: C_ANGKAT, label: 'Ungu = Angkat tangan' },
                 { color: C_FALL,   label: 'Merah = Jatuh terdeteksi' },
               ].map(({ color, label }) => (
                 <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
@@ -384,7 +394,11 @@ export default function LivePage() {
             {/* Kontrol */}
             <div style={{ marginTop: 14, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', gap: 6 }}>
-                {[{ id:'lorong', label:'Lorong (Samping)' }, { id:'rak', label:'Rak (Atas)' }].map(opt => (
+                {[
+                  { id:'both',   label:'Semua Fitur' },
+                  { id:'lorong', label:'Lorong (Samping)' },
+                  { id:'rak',    label:'Rak (Atas)' },
+                ].map(opt => (
                   <button
                     key={opt.id} type="button"
                     onClick={() => setCameraType(opt.id)}
@@ -460,10 +474,13 @@ export default function LivePage() {
                   ) : 'Belum ada kejadian'}
                 </div>
               ) : events.map((ev, i) => {
-                const isFall  = ev.tipe === 'jatuh'
+                const isFall   = ev.tipe === 'jatuh'
+                const isAngkat = !isFall && ev.sinyal === 'aktif'
                 const color   = isFall ? 'var(--waspada)'      : 'var(--bantu)'
                 const bgColor = isFall ? 'var(--waspada-soft)' : 'var(--bantu-soft)'
-                const label   = isFall ? '⚠ Jatuh Terdeteksi'  : '🙋 Tampak Butuh Bantuan'
+                const label   = isFall ? '⚠ Jatuh Terdeteksi'
+                  : isAngkat ? '🙋 Angkat Tangan — Minta Bantuan'
+                  : '👀 Tampak Butuh Bantuan'
                 return (
                   <div key={i} style={{
                     padding: '10px 14px',

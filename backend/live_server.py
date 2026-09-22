@@ -36,6 +36,7 @@ import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from pipeline import thresholds as TH
+from pipeline.geometry import INTERACTION_CLASS_NAMES
 from production.buffer import TrackWindowBuffer
 from production.worker import muat_yolo
 
@@ -55,6 +56,13 @@ FALL_SPEED     = float(os.getenv("FALL_SPEED",    TH.FALL_SPEED_DEFAULT))
 DWELL_THRESH   = float(os.getenv("DWELL_THRESH",  0.60))
 TORSO_THRESH   = float(os.getenv("TORSO_THRESH",  TH.FALL_ANGLE_DEFAULT))  # derajat
 INSPECT_THRESH = float(os.getenv("INSPECT_THRESH", 0.50))
+# Angkat tangan minta bantuan (aturan, lihat pipeline/gestures.py). Di mode live
+# durasinya dibuat lebih pendek dari jalur unggah-klip: satu jendela live = 3
+# detik dan dievaluasi sendiri-sendiri, jadi menuntut 2,5 detik DI DALAM satu
+# jendela praktis tak pernah tercapai. Yang tetap menyaring stretching/tos di
+# sini adalah syarat stabil + satu tangan + bukan meraih rak.
+ANGKAT_AKTIF      = os.getenv("ANGKAT_AKTIF", "1").lower() in ("1", "true", "yes", "on")
+ANGKAT_MIN_DURASI = float(os.getenv("ANGKAT_MIN_DURASI", 1.2))
 
 # Jendela analisis dalam DETIK. Browser mengirim frame ~5fps, tapi laju itu
 # bergoyang mengikuti beban perangkat klien — menyimpan "45 frame terakhir"
@@ -109,6 +117,7 @@ def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head) -> lis
     """
     from pipeline.normalize import build_windows_for_heads
     from pipeline.geometry import window_torso_angle, window_torso_speed, is_dwell
+    from pipeline.gestures import deteksi_angkat_tangan
     from pipeline.models import predict_proba
     import torch
 
@@ -146,17 +155,47 @@ def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head) -> lis
             })
 
     # ── Kepala Interaksi — dimatikan untuk kamera lorong ──────────────────────
+    label_aksi = None
     if camera_type != "lorong" and interaction_head is not None:
         x = torch.from_numpy(masukan["interaction_input"][-1:])
         proba = predict_proba(interaction_head, x)
+        label_aksi = INTERACTION_CLASS_NAMES[int(proba[0].argmax())]
         # Kelas 3,4,5 = hand_in_shelf, inspect_product, inspect_shelf
         skor = float(proba[0, 3:6].sum())
         if skor >= INSPECT_THRESH and is_dwell(raw, dwell_ratio=DWELL_THRESH):
             kejadian.append({
                 "type": "event", "tipe": "butuh_bantuan",
+                "sinyal": "pasif",          # dwell + inspect
                 "track_id": jendela.track_id,
                 "t0": t0, "t1": t1,
                 "skor": round(skor, 3),
+            })
+
+    # ── Angkat tangan minta bantuan (aturan, tanpa model) ────────────────────
+    # Sinyal AKTIF: permintaan eksplisit, prioritas lebih tinggi dari dwell.
+    # Dipakai di semua jenis kamera — orang bisa minta bantuan di lorong maupun
+    # di depan rak.
+    if ANGKAT_AKTIF:
+        frames_idx = [(i, kp) for i, kp in enumerate(jendela.frames)]
+        label_map = (
+            {i: label_aksi for i, _ in frames_idx} if label_aksi else None
+        )
+        ev = deteksi_angkat_tangan(
+            frames_idx,
+            src_fps=jendela.src_fps,
+            cfg={"angkat_min_durasi": ANGKAT_MIN_DURASI},
+            label_per_frame=label_map,
+        )
+        if ev:
+            e = ev[-1]
+            kejadian.append({
+                "type": "event", "tipe": "butuh_bantuan",
+                "sinyal": "aktif",          # angkat tangan
+                "track_id": jendela.track_id,
+                "t0": t0, "t1": t1,
+                "skor": 1.0,
+                "durasi": round(e["durasi"], 2),
+                "sisi_tangan": e["sisi"],
             })
 
     return kejadian

@@ -455,6 +455,32 @@ Kedua fitur diatur di panel **Deteksi Orang** pada halaman unggah — bukan di
 panel hasil, karena keduanya memengaruhi pembacaan pose & piksel saat analisis
 sehingga tidak bisa dihitung ulang dari cache seperti ambang jatuh.
 
+### 📹 Mode Live — jatuh & butuh-bantuan digabung
+
+Mode Live kini punya opsi **Semua Fitur** (default) di samping Lorong dan Rak.
+Sebelumnya operator harus memilih salah satu, sehingga satu jenis bahaya selalu
+diabaikan — padahal satu kamera webcam biasanya menangkap lorong sekaligus
+area rak, dan backend sudah mendukung `camera_type="both"` sejak awal.
+
+Deteksi **angkat tangan** juga aktif di mode Live, untuk semua jenis kamera
+(orang bisa minta bantuan di lorong maupun di depan rak). Ambang durasinya
+lebih pendek — 1,2 detik, bukan 2,5 — karena satu jendela live hanya 3 detik
+dan dievaluasi sendiri-sendiri, jadi menuntut 2,5 detik di dalam satu jendela
+praktis tak pernah tercapai. Penyaring stretching & tos tetap bekerja lewat
+syarat stabil + satu tangan + bukan meraih rak.
+
+Kejadian dibedakan di overlay maupun daftar: **ungu / "ANGKAT TANGAN"** untuk
+permintaan eksplisit, oranye untuk dwell, merah untuk jatuh.
+
+Diuji lewat WebSocket sungguhan dengan `camera_type="both"`: 375 frame (~25
+detik) dari klip uji menghasilkan **7 kejadian jatuh**, dengan kedua kepala
+model aktif dalam satu sesi.
+
+Deteksi **seragam pegawai tidak dipasang di mode Live** — pemeriksaan warna
+torso perlu piksel frame, dan menambahkannya ke jalur real-time akan menambah
+beban per frame tanpa manfaat jelas untuk demo. Bila nanti diperlukan, yang
+dibutuhkan adalah meneruskan frame ke `_inferensi_jendela()`.
+
 ---
 
 ## Konvensi Commit
