@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import PanelSeragam from '../components/PanelSeragam.jsx'
 import JamLangsung from '../components/JamLangsung.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +101,7 @@ export default function LivePage() {
   // Default 'both': satu kamera webcam biasanya menangkap lorong sekaligus
   // area rak, dan operator tidak perlu memilih mana bahaya yang mau diabaikan.
   const [cameraType, setCameraType] = useState('both')
+  const [nSeragam, setNSeragam] = useState(0)
   const [wsState, setWsState]       = useState('idle')
   const [events,  setEvents]        = useState([])
   const [errorMsg, setErrorMsg]     = useState('')
@@ -280,6 +282,33 @@ export default function LivePage() {
     <div className="page-container" style={{ background: 'var(--paper)' }}>
       {/* ── Navbar ─────────────────────────────────────────────────── */}
       <nav className="navbar">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {/* Kembali ke halaman unggah — sebelumnya satu-satunya jalan keluar
+            dari Mode Live adalah logo yang menuju landing page, sehingga
+            untuk menganalisis klip user harus lewat halaman utama dulu. */}
+        <button
+          id="back-analisis-btn"
+          onClick={() => { stopLive(); navigate('/analisis') }}
+          aria-label="Kembali ke halaman unggah video"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            background: 'rgba(255,255,255,0.14)',
+            border: '1.5px solid rgba(255,255,255,0.28)',
+            borderRadius: 50, color: 'white',
+            fontSize: 13, fontWeight: 600,
+            padding: '6px 14px 6px 10px',
+            cursor: 'pointer', fontFamily: 'inherit',
+            transition: 'background 150ms', whiteSpace: 'nowrap',
+          }}
+          onMouseOver={e => e.currentTarget.style.background = 'rgba(255,255,255,0.24)'}
+          onMouseOut={e => e.currentTarget.style.background = 'rgba(255,255,255,0.14)'}
+        >
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M9 2L4 7l5 5" stroke="white" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+          Unggah Video
+        </button>
+
         <button
           className="navbar-brand"
           onClick={() => { stopLive(); navigate('/') }}
@@ -294,6 +323,7 @@ export default function LivePage() {
             <div className="navbar-subtitle">Melihat Kebutuhan, Bukan Wajah</div>
           </div>
         </button>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {/* Timestamp wajib untuk video proof of work — lihat JamLangsung.jsx */}
           <JamLangsung ringkas />
@@ -458,6 +488,22 @@ export default function LivePage() {
                   stroke="var(--ink-faint)" strokeWidth="1.3" fill="none" strokeLinejoin="round" />
               </svg>
               Video hanya diproses di server lokal — tidak direkam atau disimpan
+            </div>
+
+            {/* Registrasi seragam — daftarnya sama dengan halaman Unggah.
+                Perubahan di sini baru terpakai pada sesi live BERIKUTNYA,
+                karena daftar dimuat sekali saat WebSocket dibuka. */}
+            <div style={{ marginTop: 16 }}>
+              <PanelSeragam onBerubah={(n) => setNSeragam(n)} />
+              {isRunning && (
+                <div style={{
+                  fontSize: 11.5, color: 'var(--ink-faint)',
+                  marginTop: -12, marginBottom: 16, lineHeight: 1.45,
+                }}>
+                  Sesi live sedang berjalan — perubahan seragam berlaku setelah
+                  dihentikan lalu dimulai lagi.
+                </div>
+              )}
             </div>
           </div>
 

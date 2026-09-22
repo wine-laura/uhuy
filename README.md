@@ -484,6 +484,18 @@ yang dikenali pegawai dikirim ke browser lewat pesan `pose` dan diberi label
 abu **"PEGAWAI"** di overlay. Cakupannya sama: dikecualikan dari
 butuh-bantuan, **tetap** dicek untuk jatuh.
 
+**Registrasi dari halaman Live.** Mode Live punya panel **Seragam Pegawai**
+sendiri — daftarkan, lihat, dan hapus tanpa berpindah halaman. Daftarnya
+**sama** dengan halaman Unggah (backend menyimpannya di satu file
+`data/seragam.json`), jadi seragam yang didaftarkan di salah satu tempat
+langsung terpakai di keduanya. Perubahan saat sesi live sedang berjalan baru
+berlaku pada sesi berikutnya, karena daftar dimuat sekali saat WebSocket
+dibuka — panel memberi tahu ini saat kamera aktif.
+
+Navbar Live juga kini punya tombol **← Unggah Video**. Sebelumnya satu-satunya
+jalan keluar adalah logo yang menuju landing page, sehingga untuk menganalisis
+klip user harus lewat halaman utama dulu.
+
 **Batas ukuran torso.** Sidik hanya dihitung bila area torso ≥1200 piksel.
 Alasannya terukur: pada klip uji, torso berukuran 37×21 px dari **orang yang
 sama** menghasilkan skor 0,705 / −0,009 / −0,009 / 0,164 di empat frame
