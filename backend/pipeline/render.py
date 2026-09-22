@@ -51,18 +51,33 @@ _LOWER_JOINTS = {11, 12, 13, 14, 15, 16}
 # ── Palet warna BGR ───────────────────────────────────────────────────────────
 COLOR_NORMAL = (80, 180, 80)      # Hijau  — gerakan normal biasa
 COLOR_FALL   = (40,  40, 210)     # Merah  — deteksi jatuh
-COLOR_HELP   = (30, 140, 240)     # Oranye — tampak butuh bantuan
+COLOR_HELP   = (30, 140, 240)     # Oranye — tampak butuh bantuan (sinyal pasif)
+COLOR_ANGKAT = (200, 60, 200)     # Ungu   — angkat tangan (permintaan eksplisit)
+COLOR_PEGAWAI= (150, 150, 150)    # Abu    — dikenali pegawai (bukan pelanggan)
 COLOR_WHITE  = (255, 255, 255)
 COLOR_BLACK  = (0,   0,   0)
 CONF_THRESHOLD = 0.3              # minimum confidence untuk menggambar sendi
 
 
-def _get_person_color(events_active: list) -> tuple:
-    """Pilih warna kerangka berdasarkan kejadian aktif."""
+def _get_person_color(events_active: list, pegawai: bool = False) -> tuple:
+    """
+    Pilih warna kerangka berdasarkan kejadian aktif.
+
+    Urutan prioritas disengaja: JATUH selalu menang, termasuk bagi pegawai —
+    pegawai yang jatuh tetap keadaan darurat. Warna pegawai hanya dipakai saat
+    tidak ada kejadian apa pun.
+    """
     if any(e["tipe"] == "jatuh" for e in events_active):
         return COLOR_FALL
+    # Angkat tangan (sinyal aktif) dibedakan dari dwell (pasif) supaya saat
+    # demo terlihat sistem memisahkan permintaan eksplisit.
+    if any(e["tipe"] == "butuh_bantuan" and e.get("sinyal") == "aktif"
+           for e in events_active):
+        return COLOR_ANGKAT
     if any(e["tipe"] == "butuh_bantuan" for e in events_active):
         return COLOR_HELP
+    if pegawai:
+        return COLOR_PEGAWAI
     return COLOR_NORMAL
 
 
@@ -220,7 +235,8 @@ def render(video_path: str, analysis_result: dict, output_path: str,
 
                 # Cek apakah track ini sedang dalam kejadian
                 person_events = [e for e in events_active if e["track_id"] == track_id]
-                color = _get_person_color(person_events)
+                pegawai = bool(ann.get("pegawai", False))
+                color = _get_person_color(person_events, pegawai)
 
                 # Gambar kerangka
                 _draw_skeleton(frame, kps, color,
@@ -240,11 +256,17 @@ def render(video_path: str, analysis_result: dict, output_path: str,
                     # Teks status yang mudah dimengerti
                     if any(e["tipe"] == "jatuh" for e in person_events):
                         status_txt = "JATUH!"
+                    elif any(e["tipe"] == "butuh_bantuan" and e.get("sinyal") == "aktif"
+                             for e in person_events):
+                        status_txt = "ANGKAT TANGAN"
                     elif any(e["tipe"] == "butuh_bantuan" for e in person_events):
                         status_txt = "BUTUH BANTUAN"
+                    elif pegawai:
+                        status_txt = "Pegawai"
                     else:
                         status_txt = "Normal"
-                    label = f"ID:{track_id}  {status_txt}"
+                    prefix = "PEGAWAI " if pegawai else ""
+                    label = f"{prefix}ID:{track_id}  {status_txt}"
                     lx = max(int(nose_x) - 40, 4)
                     ly = max(int(nose_y) - 18, 20)
                     _draw_label(frame, label, lx, ly, color)

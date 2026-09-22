@@ -37,6 +37,8 @@ from pipeline.models import load_head
 from pipeline.analyze import analyze
 from pipeline.render import render
 from pipeline import thresholds as TH
+from pipeline import uniform as UNI
+from pipeline.gestures import DEFAULT as GESTUR_DEFAULT
 from live_server import router as live_router
 from production.api import router as produksi_router, ws_router as produksi_ws_router
 from production.api import pasang_manager
@@ -77,6 +79,10 @@ PRODUKSI_AKTIF = os.getenv("SAPA_PRODUKSI", "0").lower() in ("1", "true", "yes",
 PROFIL_KAMERA = Path(os.getenv("SAPA_PROFIL_KAMERA", DATA_DIR / "cameras.json"))
 LOG_KEJADIAN = Path(os.getenv("SAPA_LOG_KEJADIAN", DATA_DIR / "kejadian.jsonl"))
 RETENSI_JAM = float(os.getenv("SAPA_RETENSI_JAM", "72"))
+
+# Sidik seragam per toko — didaftarkan sekali oleh user, dipakai ulang.
+# Disimpan di data/ agar selamat dari rebuild image (lihat docker-compose.yml).
+PROFIL_SERAGAM = Path(os.getenv("SAPA_PROFIL_SERAGAM", DATA_DIR / "seragam.json"))
 
 # ── State global (model dimuat sekali) ────────────────────────────────────────
 _state: dict = {
@@ -272,7 +278,119 @@ def api_preset():
             "Kecepatan dimatikan secara default karena pada evaluasi tidak "
             "meningkatkan akurasi; disediakan untuk eksperimen."
         ),
+        # Ambang aturan angkat tangan — dipisah dari ambang jatuh karena ini
+        # rule-based, bukan keluaran model.
+        "angkat": {
+            "default": {
+                "angkat_aktif": True,
+                "angkat_min_durasi": GESTUR_DEFAULT["angkat_min_durasi"],
+                "angkat_maks_gerak": GESTUR_DEFAULT["angkat_maks_gerak"],
+            },
+            "batas": {
+                "angkat_min_durasi": {"min": 1.0, "max": 6.0,  "step": 0.5},
+                "angkat_maks_gerak": {"min": 0.1, "max": 1.0,  "step": 0.05},
+            },
+            "catatan": (
+                "Durasi lebih panjang & gerak lebih kecil = lebih ketat. "
+                "Menahan tangan membedakan minta bantuan dari stretching, "
+                "tos, dan melambai."
+            ),
+        },
     }
+
+
+@app.get("/seragam")               # lewat proxy frontend (/api dibuang)
+@app.get("/api/seragam")           # akses langsung ke backend
+def api_seragam_list():
+    """Daftar seragam yang sudah terdaftar (tanpa histogram, biar ringan)."""
+    daftar = UNI.muat_seragam(PROFIL_SERAGAM)
+    return {
+        "seragam": [
+            {
+                "id": s.get("id"),
+                "nama": s.get("nama"),
+                "n_dominan": s.get("signature", {}).get("n_dominan"),
+                "rasio": s.get("signature", {}).get("rasio"),
+                "terbagi": s.get("signature", {}).get("terbagi"),
+            }
+            for s in daftar
+        ],
+        "batas": {
+            "seragam_ambang": {"min": 0.30, "max": 0.95, "step": 0.05},
+        },
+        "default": {
+            "seragam_ambang": UNI.DEFAULT["seragam_ambang"],
+            "seragam_aktif":  UNI.DEFAULT["seragam_aktif"],
+        },
+        "catatan": (
+            "Level 1.5 — cocokkan warna + pola sederhana. Lebih tahan dari "
+            "warna tunggal, tapi pelanggan berpakaian sangat mirip seragam "
+            "masih bisa keliru ter-exclude. Pegawai TETAP dicek untuk jatuh."
+        ),
+    }
+
+
+@app.post("/seragam")
+@app.post("/api/seragam")
+async def api_seragam_tambah(
+    file: UploadFile = File(..., description="Foto seragam (.jpg/.png)"),
+    nama: str = Form("Seragam", description="Nama seragam, mis. 'Seragam Kasir'"),
+):
+    """
+    Daftarkan satu seragam dari foto.
+
+    Yang disimpan hanya SIDIK seragam (histogram HSV + ciri pola), bukan
+    fotonya — file upload dihapus setelah diproses. Jadi tidak ada gambar orang
+    yang tersimpan, konsisten dengan privacy-by-design.
+    """
+    suffix = Path(file.filename or "foto.jpg").suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+        raise HTTPException(status_code=400, detail=f"Format tidak didukung: {suffix}")
+
+    tmp = UPLOADS_DIR / f"seragam_{uuid.uuid4().hex[:8]}{suffix}"
+    try:
+        with open(tmp, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+
+        sig = UNI.signature_dari_file(str(tmp))
+        if sig is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Gagal membaca warna dari foto. Pastikan foto jelas dan tidak terlalu gelap.",
+            )
+
+        daftar = UNI.muat_seragam(PROFIL_SERAGAM)
+        entri = {"id": uuid.uuid4().hex[:8], "nama": nama, "signature": sig}
+        daftar.append(entri)
+        UNI.simpan_seragam(PROFIL_SERAGAM, daftar)
+
+        logger.info(
+            f"Seragam '{nama}' terdaftar (id={entri['id']}, "
+            f"{sig['n_dominan']} warna dominan, terbagi={sig['terbagi']})."
+        )
+        return {
+            "id": entri["id"],
+            "nama": nama,
+            "n_dominan": sig["n_dominan"],
+            "rasio": sig["rasio"],
+            "terbagi": sig["terbagi"],
+            "total_terdaftar": len(daftar),
+        }
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
+@app.delete("/seragam/{seragam_id}")
+@app.delete("/api/seragam/{seragam_id}")
+def api_seragam_hapus(seragam_id: str):
+    """Hapus satu seragam terdaftar."""
+    daftar = UNI.muat_seragam(PROFIL_SERAGAM)
+    sisa = [s for s in daftar if s.get("id") != seragam_id]
+    if len(sisa) == len(daftar):
+        raise HTTPException(status_code=404, detail="Seragam tidak ditemukan.")
+    UNI.simpan_seragam(PROFIL_SERAGAM, sisa)
+    return {"dihapus": seragam_id, "total_terdaftar": len(sisa)}
 
 
 @app.post("/rethreshold")          # lewat proxy frontend (/api dibuang)
@@ -356,6 +474,13 @@ async def analyze_video(
     fall_thr: Optional[float] = Form(None, description="Override ambang probabilitas (0–1)"),
     fall_angle: Optional[float] = Form(None, description="Override ambang sudut torso (°); 0 = matikan"),
     fall_speed: Optional[float] = Form(None, description="Override ambang kecepatan; 0 = matikan"),
+    # ── Fitur angkat tangan (rule-based) ──────────────────────────────────
+    angkat_aktif: bool = Form(True, description="Aktifkan deteksi angkat tangan minta bantuan"),
+    angkat_min_durasi: Optional[float] = Form(None, description="Detik tangan harus ditahan (default 2.5)"),
+    angkat_maks_gerak: Optional[float] = Form(None, description="Gerak wrist maks antar-frame, satuan torso (default 0.35)"),
+    # ── Fitur exclude pegawai via seragam ─────────────────────────────────
+    seragam_aktif: bool = Form(False, description="Kecualikan pegawai berseragam dari butuh-bantuan"),
+    seragam_ambang: Optional[float] = Form(None, description="Ambang kemiripan seragam 0–1 (default 0.60)"),
 ):
     """
     Analisis klip video CCTV.
@@ -398,6 +523,14 @@ async def analyze_video(
     ambang = TH.resolve(preset, fall_thr=fall_thr, fall_angle=fall_angle, fall_speed=fall_speed)
     logger.info(f"Ambang jatuh: {ambang}")
 
+    # Seragam terdaftar — hanya dimuat bila fiturnya dinyalakan.
+    daftar_seragam = UNI.muat_seragam(PROFIL_SERAGAM) if seragam_aktif else []
+    if seragam_aktif and not daftar_seragam:
+        logger.warning(
+            "seragam_aktif=1 tapi belum ada seragam terdaftar — "
+            "tidak ada yang bisa dicocokkan, exclude pegawai efektif nonaktif."
+        )
+
 
 
     cfg = {
@@ -434,6 +567,21 @@ async def analyze_video(
         "target_fps": 15,
         "window": 45,
         "stride": 15,
+        # ── Angkat tangan minta bantuan (aturan, lihat pipeline/gestures.py) ─
+        "angkat_aktif": angkat_aktif,
+        "angkat_min_durasi": (angkat_min_durasi
+                              if angkat_min_durasi is not None
+                              else GESTUR_DEFAULT["angkat_min_durasi"]),
+        "angkat_maks_gerak": (angkat_maks_gerak
+                              if angkat_maks_gerak is not None
+                              else GESTUR_DEFAULT["angkat_maks_gerak"]),
+        # ── Exclude pegawai via seragam (lihat pipeline/uniform.py) ──────────
+        # CATATAN CAKUPAN: hanya memengaruhi butuh-bantuan, bukan jatuh.
+        "seragam_aktif": bool(seragam_aktif and daftar_seragam),
+        "seragam_ambang": (seragam_ambang
+                           if seragam_ambang is not None
+                           else UNI.DEFAULT["seragam_ambang"]),
+        "daftar_seragam": daftar_seragam,
         # Ekstraksi — filter false positive kamera sudut
         "min_track_frames": 10,
         "det_conf": 0.45,
@@ -475,6 +623,8 @@ async def analyze_video(
         # Hitung ringkasan
         n_jatuh = sum(1 for e in result["timeline"] if e["tipe"] == "jatuh")
         n_bantuan = sum(1 for e in result["timeline"] if e["tipe"] == "butuh_bantuan")
+        n_angkat = sum(1 for e in result["timeline"]
+                       if e["tipe"] == "butuh_bantuan" and e.get("sinyal") == "aktif")
 
         logger.info(f"Selesai: {n_jatuh} jatuh, {n_bantuan} butuh_bantuan → {output_filename}")
 
@@ -490,6 +640,8 @@ async def analyze_video(
             "summary": {
                 "jatuh": n_jatuh,
                 "butuh_bantuan": n_bantuan,
+                "angkat_tangan": n_angkat,
+                "bantuan_pasif": n_bantuan - n_angkat,
                 "total_track": len(set(e["track_id"] for e in result["timeline"])),
             },
             # Untuk panel Setting: ambang yang dipakai + fitur per jendela,

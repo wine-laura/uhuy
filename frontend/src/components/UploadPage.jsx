@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import PanelDeteksiOrang from './PanelDeteksiOrang.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────────
    UploadPage — halaman unggah video + pilihan jenis kamera
@@ -162,7 +163,19 @@ function CameraCard({ option, selected, onSelect }) {
   )
 }
 
+/* Nilai awal setting dua fitur rule-based. Sengaja: angkat tangan ON (fitur
+   baru yang memang ingin ditunjukkan), exclude pegawai OFF (butuh seragam
+   didaftarkan dulu, dan harus bisa dimatikan saat demo). */
+const SETTING_AWAL = {
+  angkat_aktif: true,
+  angkat_min_durasi: 2.5,
+  angkat_maks_gerak: 0.35,
+  seragam_aktif: false,
+  seragam_ambang: 0.60,
+}
+
 export default function UploadPage({ onAnalyze, error, onClearError }) {
+  const [setting, setSetting] = useState(SETTING_AWAL)
   const [file, setFile] = useState(null)
   const [cameraType, setCameraType] = useState('both')
   const [isDragging, setIsDragging] = useState(false)
@@ -441,13 +454,16 @@ export default function UploadPage({ onAnalyze, error, onClearError }) {
         )}
       </div>
 
+      {/* ── Setting deteksi orang (angkat tangan + pegawai) ───────────── */}
+      <PanelDeteksiOrang nilai={setting} onUbah={setSetting} />
+
       {/* ── CTA ───────────────────────────────────────────────────────── */}
       <button
         id="analyze-btn"
         type="button"
         className="btn btn-primary"
         disabled={!file}
-        onClick={() => onAnalyze(file, cameraType)}
+        onClick={() => onAnalyze(file, cameraType, setting)}
         style={{ fontSize: 16, padding: '14px 48px' }}
       >
         <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">

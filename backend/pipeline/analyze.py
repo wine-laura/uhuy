@@ -32,6 +32,8 @@ from .normalize import build_windows_for_heads
 from .geometry import is_dwell, window_torso_angle, window_torso_speed, INTERACTION_CLASS_NAMES
 from .models import predict_proba, BiLSTMHead
 from . import thresholds as TH
+from . import uniform as UNI
+from .gestures import deteksi_angkat_tangan
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,25 @@ def analyze(
     # → skip dwell check sepenuhnya untuk kamera rak
     skip_dwell = (camera_type == "rak")
 
+    # ── Tandai pegawai dari sidik seragam (sekali, sebelum loop track) ───────
+    # CAKUPAN PENTING: tanda pegawai HANYA mengecualikan dari BUTUH BANTUAN.
+    # Deteksi jatuh tidak pernah melihat tanda ini — pegawai yang jatuh tetap
+    # keadaan darurat dan harus selalu muncul di timeline.
+    seragam_aktif = bool(cfg.get("seragam_aktif", False))
+    status_pegawai: dict = {}
+    if seragam_aktif:
+        daftar_seragam = cfg.get("daftar_seragam") or []
+        kandidat = {
+            tid: tdata.get("uniform_sigs", [])
+            for tid, tdata in tracks.items()
+        }
+        status_pegawai = UNI.tandai_pegawai(kandidat, daftar_seragam, cfg)
+        n_peg = sum(1 for v in status_pegawai.values() if v["pegawai"])
+        logger.info(
+            f"Seragam: {n_peg} dari {len(tracks)} track dikenali pegawai "
+            f"(dikecualikan dari butuh-bantuan, TETAP dicek untuk jatuh)."
+        )
+
     timeline: list = []
     frame_annotations: dict = {}
     # Cache fitur per jendela — dipakai endpoint /rethreshold agar percobaan
@@ -180,15 +201,23 @@ def analyze(
                                                  int((float(frame_indices[-1]) / src_fps - t_start) * dst_fps) + 1)):
                     window_action_for_resamp[ri] = label
 
+        # Label aksi per frame UNTUK TRACK INI — dipakai blok 5c (angkat
+        # tangan) sebagai syarat "bukan sedang meraih rak". Dibangun di sini
+        # karena di sinilah label per frame track ini memang dihitung.
+        label_track: dict = {}
+
         for orig_i, (fidx, kps) in enumerate(frames):
             t_rel = (float(fidx) / src_fps) - t_start
             ri = min(int(round(t_rel * dst_fps)), max(window_action_for_resamp.keys(), default=0))
             action = window_action_for_resamp.get(ri, "background")
+            if inter_probs is not None:
+                label_track[fidx] = action
 
             frame_annotations.setdefault(fidx, []).append({
                 "track_id": int(track_id),
                 "keypoints": kps,
                 "action_label": action,
+                "pegawai": bool(status_pegawai.get(track_id, {}).get("pegawai", False)),
             })
 
         # 5a. Deteksi kejadian JATUH
@@ -218,8 +247,33 @@ def analyze(
                         "track_id": int(track_id),
                     })
 
-        # 5b. Deteksi kejadian BUTUH BANTUAN
-        if inter_probs is not None:
+        # Apakah track ini pegawai? Dipakai HANYA di 5b & 5c (butuh bantuan).
+        # Blok 5a (jatuh) di atas sengaja tidak memeriksanya.
+        ini_pegawai = bool(status_pegawai.get(track_id, {}).get("pegawai", False))
+
+        # 5c. Deteksi ANGKAT TANGAN minta bantuan (rule-based, lihat gestures.py)
+        # Ini sinyal AKTIF: pelanggan meminta secara eksplisit, jadi diberi
+        # prioritas lebih tinggi daripada sinyal pasif dwell+inspect di 5b.
+        if bool(cfg.get("angkat_aktif", True)) and not ini_pegawai:
+            # label_track kosong bila kepala interaksi tidak aktif (mis. kamera
+            # lorong); kirim None supaya syarat "bukan meraih rak" dilewati,
+            # bukan dianggap selalu terpenuhi.
+            label_map = label_track or None
+
+            for ev in deteksi_angkat_tangan(frames, src_fps, cfg, label_map):
+                timeline.append({
+                    "tipe": "butuh_bantuan",
+                    "sinyal": "aktif",           # angkat tangan = permintaan eksplisit
+                    "t0": ev["t0"],
+                    "t1": ev["t1"],
+                    "durasi": round(ev["durasi"], 2),
+                    "sisi_tangan": ev["sisi"],
+                    "skor": 1.0,                 # aturan: terpenuhi atau tidak
+                    "track_id": int(track_id),
+                })
+
+        # 5b. Deteksi kejadian BUTUH BANTUAN (sinyal PASIF: dwell + inspect)
+        if inter_probs is not None and not ini_pegawai:
             run_count, run_t0, run_t1 = 0, None, None
             best_prob = 0.0
 
@@ -265,6 +319,7 @@ def analyze(
                     if run_count >= help_min_win:
                         timeline.append({
                             "tipe": "butuh_bantuan",
+                            "sinyal": "pasif",   # dwell + inspect, bukan permintaan eksplisit
                             "t0": float(run_t0),
                             "t1": float(run_t1),
                             "durasi_window": run_count,
@@ -277,6 +332,7 @@ def analyze(
             if run_count >= help_min_win:
                 timeline.append({
                     "tipe": "butuh_bantuan",
+                    "sinyal": "pasif",
                     "t0": float(run_t0),
                     "t1": float(run_t1),
                     "durasi_window": run_count,

@@ -20,7 +20,7 @@ export default function AnalisisApp() {
   const [fileSizeMB, setFileSizeMB] = useState(0)
   const abortRef = useRef(null)
 
-  async function handleAnalyze(file, cameraType) {
+  async function handleAnalyze(file, cameraType, setting = {}) {
     setError(null)
     setPage('processing')
     setFileSizeMB(file.size ? +(file.size / 1024 / 1024).toFixed(1) : 0)
@@ -28,6 +28,12 @@ export default function AnalisisApp() {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('camera_type', cameraType)
+    // Setting dua fitur rule-based (angkat tangan & exclude pegawai). Keduanya
+    // harus dikirim saat analisis karena memengaruhi pembacaan pose/piksel —
+    // beda dari ambang jatuh yang bisa dihitung ulang dari cache.
+    Object.entries(setting).forEach(([k, v]) => {
+      formData.append(k, typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v))
+    })
 
     const controller = new AbortController()
     abortRef.current = controller

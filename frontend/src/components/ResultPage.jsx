@@ -16,9 +16,14 @@ function formatTime(sec) {
 /* Kartu satu kejadian di timeline */
 function EventCard({ event, isActive, onClick }) {
   const isFall  = event.tipe === 'jatuh'
+  // Sinyal AKTIF = pelanggan mengangkat tangan (permintaan eksplisit).
+  // Sinyal PASIF = dwell + inspect dari kepala interaksi.
+  const isAktif = !isFall && event.sinyal === 'aktif'
   const typeClass = isFall ? 'jatuh' : 'bantu'
   const color   = isFall ? 'var(--waspada)'      : 'var(--bantu)'
-  const label   = isFall ? 'Jatuh Terdeteksi'    : 'Tampak Butuh Bantuan'
+  const label   = isFall
+    ? 'Jatuh Terdeteksi'
+    : (isAktif ? 'Angkat Tangan — Minta Bantuan' : 'Tampak Butuh Bantuan')
   const icon    = isFall
     ? (
       <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
@@ -82,6 +87,21 @@ function EventCard({ event, isActive, onClick }) {
             {event.skor != null && (
               <span className={`chip ${isFall ? 'chip-waspada' : 'chip-bantu'}`}>
                 {(event.skor * 100).toFixed(0)}% yakin
+              </span>
+            )}
+
+            {/* Penanda permintaan eksplisit — prioritas lebih tinggi */}
+            {isAktif && (
+              <span className="chip chip-bantu" style={{ fontWeight: 700 }}>
+                permintaan eksplisit
+              </span>
+            )}
+
+            {/* Durasi tangan ditahan */}
+            {isAktif && event.durasi != null && (
+              <span style={{ fontSize: 11, color: 'var(--ink-faint)', fontFamily: "'JetBrains Mono', monospace" }}>
+                tahan {event.durasi.toFixed(1)}d
+                {event.sisi_tangan ? ` · ${event.sisi_tangan}` : ''}
               </span>
             )}
 
@@ -284,6 +304,26 @@ export default function ResultPage({ result, onReset }) {
         <SummaryBadge count={summary.jatuh ?? 0}         type="jatuh"  />
         <SummaryBadge count={summary.butuh_bantuan ?? 0} type="bantuan" />
 
+        {/* Pecahan sinyal aktif vs pasif — hanya bila ada angkat tangan */}
+        {(summary.angkat_tangan ?? 0) > 0 && (
+          <div style={{
+            padding: '20px 24px', borderRadius: 'var(--radius-lg)',
+            background: 'var(--surface)', border: '1px solid var(--garis)',
+            display: 'flex', flexDirection: 'column', gap: 6,
+            justifyContent: 'center', minWidth: 150,
+          }}>
+            <div style={{ fontSize: 12.5, color: 'var(--ink)', fontWeight: 600 }}>
+              {summary.angkat_tangan} angkat tangan
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--ink-soft)', lineHeight: 1.45 }}>
+              permintaan eksplisit
+              {(summary.bantuan_pasif ?? 0) > 0
+                ? ` · ${summary.bantuan_pasif} dari dwell`
+                : ''}
+            </div>
+          </div>
+        )}
+
         {/* Pesan saat tidak ada kejadian */}
         {!hasEvents && (
           <div style={{
@@ -404,7 +444,9 @@ export default function ResultPage({ result, onReset }) {
             {[
               { bg: 'rgba(80,180,80,0.9)',   label: 'Hijau — gerakan normal' },
               { bg: 'rgba(240,140,30,0.95)', label: 'Oranye — tampak butuh bantuan' },
+              { bg: 'rgba(200,60,200,0.95)', label: 'Ungu — angkat tangan (minta bantuan)' },
               { bg: 'rgba(210,40,40,0.95)',  label: 'Merah — jatuh terdeteksi' },
+              { bg: 'rgba(150,150,150,0.95)',label: 'Abu — pegawai (dikecualikan dari bantuan)' },
             ].map(({ bg, label }) => (
               <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                 <span style={{ width: 18, height: 3, borderRadius: 99, background: bg, display: 'inline-block', flexShrink: 0 }} />

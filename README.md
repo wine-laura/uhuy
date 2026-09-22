@@ -363,6 +363,74 @@ GET  /api/preset        → daftar preset + batas slider
 POST /api/rethreshold   → hitung ulang kejadian dari fall_cache
 ```
 
+### 🙋 Angkat tangan minta bantuan (rule-based)
+
+Sinyal **aktif**: pelanggan meminta secara eksplisit, melengkapi sinyal
+**pasif** yang sudah ada (dwell + inspect). Tanpa model, tanpa dataset —
+semuanya dari keypoint & tracking yang sudah dihitung.
+
+Tangan terangkat saja **tidak cukup**, karena pose "minta bantuan",
+"stretching", "tos", dan "meraih rak tinggi" itu mirip semua — wrist di atas
+shoulder pada keempatnya. Yang membedakan adalah konteksnya, jadi empat syarat
+harus terpenuhi sekaligus (lihat `backend/pipeline/gestures.py`):
+
+| Syarat | Menyaring |
+|---|---|
+| Tangan di atas bahu, jauh dari kepala | benerin rambut, pegang topi |
+| **Ditahan** ≥2,5 detik & wrist stabil | tos, melambai, stretching (regang lalu turun) |
+| Bukan berlabel `reach` / `hand_in_shelf` | meraih barang di rak tinggi |
+| Hanya **satu** tangan terangkat | stretching & tos yang pakai dua tangan |
+
+Diuji pada 7 skenario sintetis — minta bantuan terdeteksi; stretching, tos,
+melambai, meraih rak, benerin rambut, dan angkat-sebentar semuanya ditolak.
+
+Kejadiannya masuk timeline sebagai `butuh_bantuan` dengan `sinyal: "aktif"`
+(dwell memakai `"pasif"`), diberi label ungu di video dan chip "permintaan
+eksplisit" di UI. Ambang durasi & kestabilan bisa diatur di panel Setting.
+
+### 👔 Kecualikan pegawai via seragam (Level 1.5)
+
+Pegawai yang berdiri lama menata barang tidak seharusnya ter-flag sebagai
+pelanggan butuh bantuan. Toko mendaftarkan seragamnya sekali, lalu sistem
+mencocokkan area torso tiap orang.
+
+**Kenapa bukan warna dominan tunggal:** pelanggan berkaus biru polos akan
+dianggap pegawai berseragam biru. Karena itu sidik seragam menyimpan
+**distribusi** warna (histogram HSV 384 bin) **plus ciri pola** — jumlah warna
+dominan, rasio tiap warna, hue warna kedua, dan apakah ada pembagian blok
+horizontal. Pencocokan mensyaratkan histogram **dan** pola cocok.
+
+Terbukti pada uji: kaus biru polos mendapat korelasi histogram **0,919** —
+tinggi — tetapi **tetap ditolak** karena polanya tidak cocok. Begitu juga
+"biru + hijau" terhadap seragam "biru + pink". Seragam asli tetap dikenali
+meski cahaya diredupkan (skor 0,671). HSV dipakai karena hue relatif stabil
+saat pencahayaan berubah, sedangkan ketiga kanal RGB bergeser bersamaan.
+
+> **Cakupan — penting.** Tanda pegawai HANYA mengecualikan dari butuh-bantuan.
+> Deteksi **jatuh tidak pernah** memeriksanya: pegawai yang jatuh tetap keadaan
+> darurat. Ini dijaga oleh uji yang memeriksa blok keputusan jatuh di
+> `analyze.py` tidak menyentuh status pegawai.
+
+**Keterbatasan yang disadari:** ini Level 1.5, bukan solusi sempurna.
+Pelanggan yang kebetulan berpakaian sangat mirip seragam (warna **dan** pola
+serupa) masih bisa keliru ter-exclude. Arah lanjutan adalah pencocokan berbasis
+feature embedding / person re-identification — **future work**, tidak dibangun
+sekarang.
+
+Yang disimpan hanya sidik warna, **bukan fotonya** — file upload dihapus
+setelah diproses, jadi tidak ada gambar orang yang tersimpan.
+
+Endpoint terkait:
+```
+GET    /api/seragam        → daftar seragam terdaftar
+POST   /api/seragam        → daftarkan seragam dari foto (multipart)
+DELETE /api/seragam/{id}   → hapus seragam
+```
+
+Kedua fitur diatur di panel **Deteksi Orang** pada halaman unggah — bukan di
+panel hasil, karena keduanya memengaruhi pembacaan pose & piksel saat analisis
+sehingga tidak bisa dihitung ulang dari cache seperti ambang jatuh.
+
 ---
 
 ## Konvensi Commit

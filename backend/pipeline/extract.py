@@ -12,6 +12,8 @@ import numpy as np
 import logging
 from pathlib import Path
 
+from . import uniform as UNI
+
 logger = logging.getLogger(__name__)
 
 # Singleton YOLO — dimuat sekali saat pertama dipanggil
@@ -105,6 +107,19 @@ def extract_poses(video_path: str, cfg: dict, camera_type: str = "lorong") -> di
     skipped_kp    = 0
     skipped_no_id = 0
 
+    # ── Sidik seragam per track (untuk mengenali pegawai) ─────────────────────
+    # Diambil DI SINI, di loop yang sama dengan tracking, karena inilah satu-
+    # satunya tempat piksel frame masih tersedia. Menghitungnya di tahap lain
+    # berarti membaca ulang video — dan ekstraksi pose adalah bagian termahal
+    # di pipeline, jadi tidak boleh diulang hanya untuk mengecek warna baju.
+    #
+    # Hanya beberapa frame AWAL tiap track yang diambil: sekali sebuah track
+    # ditandai pegawai, tanda itu bertahan selama track_id hidup.
+    seragam_aktif = bool(cfg.get("seragam_aktif", False))
+    n_frame_cek   = int(cfg.get("seragam_frame_cek", UNI.DEFAULT["seragam_frame_cek"]))
+    sig_min_conf  = float(cfg.get("seragam_min_conf", UNI.DEFAULT["seragam_min_conf"]))
+    sig_per_track: dict = {}
+
     for frame_idx, result in enumerate(results_gen):
         if result.keypoints is None:
             continue
@@ -179,6 +194,17 @@ def extract_poses(video_path: str, cfg: dict, camera_type: str = "lorong") -> di
                 tracks_raw[track_id] = []
             tracks_raw[track_id].append((frame_idx, kps))
 
+            # Sidik seragam dari area torso — hanya untuk frame awal track.
+            if seragam_aktif and len(sig_per_track.get(track_id, [])) < n_frame_cek:
+                frame_img = getattr(result, "orig_img", None)
+                if frame_img is not None:
+                    kotak = UNI.kotak_torso(kps, frame_w, frame_h, sig_min_conf)
+                    if kotak is not None:
+                        x0, y0, x1, y1 = kotak
+                        sig = UNI.signature_dari_patch(frame_img[y0:y1, x0:x1])
+                        if sig is not None:
+                            sig_per_track.setdefault(track_id, []).append(sig)
+
     logger.info(
         f"Filter: {skipped_conf} dibuang (conf), "
         f"{skipped_bbox} dibuang (bbox kecil), "
@@ -204,6 +230,8 @@ def extract_poses(video_path: str, cfg: dict, camera_type: str = "lorong") -> di
             "frames": frames_sorted,
             "fps": fps,
             "total_frames": total_frames,
+            # Sidik seragam frame-frame awal track; [] bila fitur nonaktif.
+            "uniform_sigs": sig_per_track.get(track_id, []),
         }
 
     return result_dict

@@ -47,4 +47,7 @@ backend/data/cameras.json
 backend/data/kejadian.jsonl
 backend/data/videos/
 backend/data/*.tmp
+# seragam.json memuat sidik seragam milik toko tertentu — konfigurasi lokal,
+# bukan bagian aplikasi. (Isinya histogram warna, bukan gambar.)
+backend/data/seragam.json
 !backend/data/cameras.example.json
