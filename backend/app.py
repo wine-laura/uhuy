@@ -26,6 +26,8 @@ import shutil
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+import cv2
 from typing import Optional
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Response, UploadFile
@@ -312,6 +314,7 @@ def api_seragam_list():
                 "n_dominan": s.get("signature", {}).get("n_dominan"),
                 "rasio": s.get("signature", {}).get("rasio"),
                 "terbagi": s.get("signature", {}).get("terbagi"),
+                "n_foto": s.get("signature", {}).get("n_foto", 1),
             }
             for s in daftar
         ],
@@ -333,49 +336,118 @@ def api_seragam_list():
 @app.post("/seragam")
 @app.post("/api/seragam")
 async def api_seragam_tambah(
-    file: UploadFile = File(..., description="Foto seragam (.jpg/.png)"),
+    file: list[UploadFile] = File(..., description="1–3 foto seragam (.jpg/.png)"),
     nama: str = Form("Seragam", description="Nama seragam, mis. 'Seragam Kasir'"),
+    sudah_dicrop: bool = Form(
+        False,
+        description="True bila area sudah dipilih presisi (mis. crop dari frame video)",
+    ),
 ):
     """
-    Daftarkan satu seragam dari foto.
+    Daftarkan satu seragam dari 1–3 foto.
 
-    Yang disimpan hanya SIDIK seragam (histogram HSV + ciri pola), bukan
-    fotonya — file upload dihapus setelah diproses. Jadi tidak ada gambar orang
-    yang tersimpan, konsisten dengan privacy-by-design.
+    Beberapa foto dari sudut & pencahayaan berbeda digabung menjadi SATU sidik
+    (lihat uniform.gabung_signature): warna yang konsisten di semua foto
+    menguat, pantulan cahaya yang cuma ada di satu foto melemah. Hasilnya satu
+    entri seragam, bukan tiga.
+
+    Yang disimpan hanya SIDIK warna, bukan fotonya — file upload dihapus
+    setelah diproses. Jadi tidak ada gambar orang yang tersimpan, konsisten
+    dengan privacy-by-design.
     """
-    suffix = Path(file.filename or "foto.jpg").suffix.lower()
-    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
-        raise HTTPException(status_code=400, detail=f"Format tidak didukung: {suffix}")
+    berkas = file if isinstance(file, list) else [file]
+    if not berkas:
+        raise HTTPException(status_code=400, detail="Tidak ada foto yang diunggah.")
+    if len(berkas) > 3:
+        raise HTTPException(
+            status_code=400,
+            detail="Maksimal 3 foto per seragam. Lebih dari itu tidak menambah ketahanan.",
+        )
 
-    tmp = UPLOADS_DIR / f"seragam_{uuid.uuid4().hex[:8]}{suffix}"
+    tmp_paths: list[Path] = []
     try:
-        with open(tmp, "wb") as f:
-            shutil.copyfileobj(file.file, f)
+        sigs = []
+        for f in berkas:
+            suffix = Path(f.filename or "foto.jpg").suffix.lower()
+            if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}:
+                raise HTTPException(status_code=400, detail=f"Format tidak didukung: {suffix}")
 
-        sig = UNI.signature_dari_file(str(tmp))
-        if sig is None:
+            tmp = UPLOADS_DIR / f"seragam_{uuid.uuid4().hex[:8]}{suffix}"
+            tmp_paths.append(tmp)
+            with open(tmp, "wb") as out:
+                shutil.copyfileobj(f.file, out)
+
+            # Area hasil crop user sudah presisi — jangan dipotong lagi.
+            sig = UNI.signature_dari_file(str(tmp), crop_tengah=not sudah_dicrop)
+            if sig is not None:
+                sigs.append(sig)
+
+        if not sigs:
             raise HTTPException(
                 status_code=400,
                 detail="Gagal membaca warna dari foto. Pastikan foto jelas dan tidak terlalu gelap.",
             )
 
+        gabungan = UNI.gabung_signature(sigs)
         daftar = UNI.muat_seragam(PROFIL_SERAGAM)
-        entri = {"id": uuid.uuid4().hex[:8], "nama": nama, "signature": sig}
+        entri = {"id": uuid.uuid4().hex[:8], "nama": nama, "signature": gabungan}
         daftar.append(entri)
         UNI.simpan_seragam(PROFIL_SERAGAM, daftar)
 
         logger.info(
-            f"Seragam '{nama}' terdaftar (id={entri['id']}, "
-            f"{sig['n_dominan']} warna dominan, terbagi={sig['terbagi']})."
+            f"Seragam '{nama}' terdaftar (id={entri['id']}, {len(sigs)} foto, "
+            f"{gabungan['n_dominan']} warna dominan, terbagi={gabungan['terbagi']})."
         )
         return {
             "id": entri["id"],
             "nama": nama,
-            "n_dominan": sig["n_dominan"],
-            "rasio": sig["rasio"],
-            "terbagi": sig["terbagi"],
+            "n_foto": len(sigs),
+            "n_dominan": gabungan["n_dominan"],
+            "rasio": gabungan["rasio"],
+            "terbagi": gabungan["terbagi"],
             "total_terdaftar": len(daftar),
         }
+    finally:
+        for t in tmp_paths:
+            if t.exists():
+                t.unlink()
+
+
+@app.post("/seragam/frame")
+@app.post("/api/seragam/frame")
+async def api_seragam_frame(
+    file: UploadFile = File(..., description="Video toko (.mp4)"),
+    detik: float = Form(0.0, description="Ambil frame pada detik ke-"),
+):
+    """
+    Ambil satu frame dari video toko, untuk registrasi "pilih area seragam".
+
+    User melihat frame ini di UI, menandai kotak area baju pegawai, lalu
+    kotak itu dikirim ke POST /seragam sebagai foto ter-crop.
+
+    Frame dikembalikan sebagai JPEG mentah (bukan disimpan di server).
+    """
+    suffix = Path(file.filename or "video.mp4").suffix.lower()
+    if suffix not in {".mp4", ".avi", ".mov", ".mkv"}:
+        raise HTTPException(status_code=400, detail=f"Format video tidak didukung: {suffix}")
+
+    tmp = UPLOADS_DIR / f"frame_{uuid.uuid4().hex[:8]}{suffix}"
+    try:
+        with open(tmp, "wb") as out:
+            shutil.copyfileobj(file.file, out)
+
+        frame = UNI.ambil_frame(str(tmp), detik)
+        if frame is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Gagal mengambil frame. Periksa file video atau kurangi nilai detik.",
+            )
+
+        ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
+        if not ok:
+            raise HTTPException(status_code=500, detail="Gagal meng-encode frame.")
+
+        return Response(content=buf.tobytes(), media_type="image/jpeg")
     finally:
         if tmp.exists():
             tmp.unlink()

@@ -238,17 +238,97 @@ def simpan_seragam(path: str | Path, daftar: list) -> None:
     p.write_text(json.dumps({"seragam": daftar}, indent=2))
 
 
-def signature_dari_file(path_gambar: str) -> dict | None:
-    """Hitung signature dari satu file foto seragam (dipakai saat registrasi)."""
+def signature_dari_file(path_gambar: str, crop_tengah: bool = True) -> dict | None:
+    """
+    Hitung signature dari satu file foto seragam (dipakai saat registrasi).
+
+    crop_tengah=True memotong 15% tepi lalu mengambil bagian tengah, karena
+    foto seragam biasanya masih menyisakan latar di pinggir. Setel False bila
+    area-nya sudah dipilih presisi oleh user (mis. crop dari frame video) —
+    memotongnya lagi hanya akan membuang bagian yang sengaja dipilih.
+    """
     img = cv2.imread(str(path_gambar))
     if img is None:
         return None
-    # Foto seragam biasanya sudah ter-crop ke bajunya; ambil bagian tengah
-    # untuk mengurangi latar di pinggir.
-    h, w = img.shape[:2]
-    y0, y1 = int(h * 0.15), int(h * 0.85)
-    x0, x1 = int(w * 0.15), int(w * 0.85)
-    return signature_dari_patch(img[y0:y1, x0:x1])
+    if crop_tengah:
+        h, w = img.shape[:2]
+        y0, y1 = int(h * 0.15), int(h * 0.85)
+        x0, x1 = int(w * 0.15), int(w * 0.85)
+        img = img[y0:y1, x0:x1]
+    return signature_dari_patch(img)
+
+
+def gabung_signature(sigs: list) -> dict | None:
+    """
+    Gabungkan beberapa signature (1-3 foto seragam yang sama) menjadi satu.
+
+    KENAPA DIRATA-RATA, BUKAN DISIMPAN TERPISAH
+    Beberapa foto dari sudut & pencahayaan berbeda memberi gambaran seragam
+    yang lebih utuh daripada satu foto. Histogram-nya dirata-ratakan lalu
+    dinormalisasi ulang, sehingga warna yang muncul KONSISTEN di semua foto
+    menguat, sementara pantulan cahaya atau latar yang hanya ada di satu foto
+    ikut melemah.
+
+    Ciri pola diambil dengan MEDIAN / MAYORITAS, bukan rata-rata, supaya satu
+    foto yang buruk (mis. terlalu gelap sehingga warna keduanya tak terbaca)
+    tidak menggeser hasilnya.
+    """
+    sigs = [s for s in sigs if s]
+    if not sigs:
+        return None
+    if len(sigs) == 1:
+        return sigs[0]
+
+    H = np.mean([np.asarray(s["hist"], dtype=np.float32) for s in sigs], axis=0)
+    puncak = float(H.max())
+    if puncak > 0:
+        H = H / puncak   # normalisasi ulang ke 0..1 seperti signature tunggal
+
+    # Pola: ambil nilai tengah / terbanyak dari foto-foto yang ada.
+    n_dom = int(np.median([s["n_dominan"] for s in sigs]))
+    hue0  = [s["hue_dominan"][0] for s in sigs if s.get("hue_dominan")]
+    hue1  = [s["hue_dominan"][1] for s in sigs if len(s.get("hue_dominan", [])) > 1]
+    rasio0 = [s["rasio"][0] for s in sigs if s.get("rasio")]
+    rasio1 = [s["rasio"][1] for s in sigs if len(s.get("rasio", [])) > 1]
+
+    hue_dominan = [int(np.median(hue0))] if hue0 else [0]
+    if hue1:
+        hue_dominan.append(int(np.median(hue1)))
+
+    rasio = [float(np.median(rasio0))] if rasio0 else [1.0]
+    if rasio1:
+        rasio.append(float(np.median(rasio1)))
+
+    return {
+        "hist": [float(v) for v in H],
+        "n_dominan": max(1, n_dom),
+        "rasio": rasio,
+        "hue_dominan": hue_dominan,
+        # Mayoritas: pembagian blok dianggap ada bila terlihat di lebih dari
+        # separuh foto.
+        "terbagi": bool(sum(1 for s in sigs if s.get("terbagi")) * 2 > len(sigs)),
+        "n_foto": len(sigs),
+    }
+
+
+def ambil_frame(video_path: str, detik: float = 0.0) -> np.ndarray | None:
+    """
+    Ambil satu frame dari video pada detik tertentu.
+
+    Dipakai untuk registrasi "pilih area dari frame video toko": user melihat
+    frame ini, lalu menandai kotak area seragam pegawai di atasnya.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return None
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        if detik > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(detik * fps))
+        ok, frame = cap.read()
+        return frame if ok else None
+    finally:
+        cap.release()
 
 
 def tandai_pegawai(

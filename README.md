@@ -417,13 +417,37 @@ serupa) masih bisa keliru ter-exclude. Arah lanjutan adalah pencocokan berbasis
 feature embedding / person re-identification — **future work**, tidak dibangun
 sekarang.
 
+**Registrasi — sekali per toko**, dua cara:
+
+1. **Upload 1–3 foto seragam.** Beberapa foto dari sudut & pencahayaan
+   berbeda digabung menjadi **satu** sidik (`gabung_signature`): histogram
+   dirata-rata lalu dinormalisasi ulang, sehingga warna yang konsisten di
+   semua foto menguat sementara pantulan cahaya yang hanya ada di satu foto
+   melemah. Ciri pola diambil dengan median/mayoritas, bukan rata-rata, agar
+   satu foto buruk tidak menggeser hasil. Terukur pada uji: di pencahayaan
+   +20% skor 1 foto 0,151 → gabungan 3 foto **0,514**.
+2. **Pilih area dari frame video toko.** Untuk toko tanpa foto seragam
+   terpisah: upload rekaman CCTV, pilih detik, lalu drag kotak pada baju
+   pegawai. Area itu di-crop di browser dan dikirim dengan
+   `sudah_dicrop=true` supaya backend tidak memotongnya lagi.
+
+Sekali terdaftar, sidiknya dipakai untuk semua analisis berikutnya — tidak
+perlu upload lagi tiap video. Tersimpan di `backend/data/seragam.json`
+(volume Docker, selamat dari rebuild) dan masuk `.gitignore` karena itu
+konfigurasi milik toko tertentu.
+
 Yang disimpan hanya sidik warna, **bukan fotonya** — file upload dihapus
 setelah diproses, jadi tidak ada gambar orang yang tersimpan.
+
+> **Tips demo:** pakai foto **close-up bajunya**, bukan orang berdiri utuh.
+> Seragam **multi-warna** jauh lebih andal — kalau hanya 1 warna dominan,
+> pencocokan kurang tajam dan UI akan memperingatkan.
 
 Endpoint terkait:
 ```
 GET    /api/seragam        → daftar seragam terdaftar
-POST   /api/seragam        → daftarkan seragam dari foto (multipart)
+POST   /api/seragam        → daftarkan dari 1–3 foto (multipart, digabung jadi 1)
+POST   /api/seragam/frame  → ambil 1 frame JPEG dari video, untuk pilih area
 DELETE /api/seragam/{id}   → hapus seragam
 ```
 
