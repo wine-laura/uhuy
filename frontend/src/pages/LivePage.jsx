@@ -20,19 +20,21 @@ const C_NORMAL = 'rgba(80,180,80,0.9)'    // hijau — gerakan normal
 const C_FALL   = 'rgba(210,40,40,0.95)'   // merah — jatuh
 const C_HELP   = 'rgba(240,140,30,0.95)'  // oranye — butuh bantuan (dwell/pasif)
 const C_ANGKAT = 'rgba(200,60,200,0.95)'  // ungu  — angkat tangan (permintaan eksplisit)
+const C_PEGAWAI= 'rgba(150,150,150,0.95)' // abu   — pegawai (dikecualikan dari bantuan)
 
 function buildWsUrl() {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${window.location.host}/api/ws/live`
 }
 
-function trackColor(trackId, activeEvents) {
+function trackColor(trackId, activeEvents, pegawai = false) {
   const evs = activeEvents.filter(e => e.track_id === trackId)
   // Jatuh selalu menang. Angkat tangan (sinyal aktif) dibedakan dari dwell
   // supaya permintaan eksplisit terlihat berbeda saat demo.
   if (evs.some(e => e.tipe === 'jatuh'))         return C_FALL
   if (evs.some(e => e.tipe === 'butuh_bantuan' && e.sinyal === 'aktif')) return C_ANGKAT
   if (evs.some(e => e.tipe === 'butuh_bantuan')) return C_HELP
+  if (pegawai) return C_PEGAWAI
   return C_NORMAL
 }
 
@@ -92,6 +94,7 @@ export default function LivePage() {
   const rafRef       = useRef(null)
   const startTimeRef = useRef(null)
   const poseRef      = useRef({})    // mutable ref — tidak trigger re-render
+  const pegawaiRef   = useRef([])    // track_id yang dikenali pegawai
   const eventsRef    = useRef([])
 
   // Default 'both': satu kamera webcam biasanya menangkap lorong sekaligus
@@ -125,7 +128,7 @@ export default function LivePage() {
 
       for (const [trackId, kps] of Object.entries(poseRef.current)) {
         const tid = Number(trackId)
-        const col = trackColor(tid, active)
+        const col = trackColor(tid, active, pegawaiRef.current.includes(Number(tid)))
         drawSkeleton(ctx, kps, col)
 
         // Label di atas kepala / bahu
@@ -133,13 +136,16 @@ export default function LivePage() {
         const cx = nc > 0.25 ? nx : (kps[5][0] + kps[6][0]) / 2
         const cy = nc > 0.25 ? ny : (kps[5][1] + kps[6][1]) / 2
 
+        const isPegawai = pegawaiRef.current.includes(Number(tid))
         const hasFall   = active.some(e => e.track_id === tid && e.tipe === 'jatuh')
         const hasAngkat = active.some(e => e.track_id === tid && e.tipe === 'butuh_bantuan' && e.sinyal === 'aktif')
         const hasHelp   = active.some(e => e.track_id === tid && e.tipe === 'butuh_bantuan')
         const statusTxt = hasFall ? 'JATUH!'
           : hasAngkat ? 'ANGKAT TANGAN'
-          : hasHelp ? 'BUTUH BANTUAN' : 'Normal'
-        drawLabel(ctx, `ID:${tid}  ${statusTxt}`, cx - 30, cy - 12, col)
+          : hasHelp ? 'BUTUH BANTUAN'
+          : isPegawai ? 'Pegawai' : 'Normal'
+        const prefix = isPegawai ? 'PEGAWAI ' : ''
+        drawLabel(ctx, `${prefix}ID:${tid}  ${statusTxt}`, cx - 30, cy - 12, col)
       }
 
       rafRef.current = requestAnimationFrame(loop)
@@ -208,6 +214,7 @@ export default function LivePage() {
         const msg = JSON.parse(e.data)
         if (msg.type === 'pose') {
           poseRef.current = msg.tracks ?? {}  // update langsung, RAF loop ambil sendiri
+          pegawaiRef.current = msg.pegawai ?? []
         } else if (msg.type === 'event') {
           eventsRef.current = [msg, ...eventsRef.current].slice(0, 50)
           setEvents(ev => [msg, ...ev].slice(0, 50))  // update UI
@@ -383,6 +390,7 @@ export default function LivePage() {
                 { color: C_HELP,   label: 'Oranye = Butuh bantuan' },
                 { color: C_ANGKAT, label: 'Ungu = Angkat tangan' },
                 { color: C_FALL,   label: 'Merah = Jatuh terdeteksi' },
+                { color: C_PEGAWAI,label: 'Abu = Pegawai (tetap dicek jatuh)' },
               ].map(({ color, label }) => (
                 <span key={label} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   <span style={{ width: 12, height: 4, borderRadius: 99, background: color, display: 'inline-block' }} />

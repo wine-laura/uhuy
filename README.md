@@ -476,10 +476,23 @@ Diuji lewat WebSocket sungguhan dengan `camera_type="both"`: 375 frame (~25
 detik) dari klip uji menghasilkan **7 kejadian jatuh**, dengan kedua kepala
 model aktif dalam satu sesi.
 
-Deteksi **seragam pegawai tidak dipasang di mode Live** — pemeriksaan warna
-torso perlu piksel frame, dan menambahkannya ke jalur real-time akan menambah
-beban per frame tanpa manfaat jelas untuk demo. Bila nanti diperlukan, yang
-dibutuhkan adalah meneruskan frame ke `_inferensi_jendela()`.
+Deteksi **seragam pegawai juga aktif di mode Live**. Sidik torso diambil di
+loop WebSocket — satu-satunya tempat piksel frame tersedia — hanya untuk
+beberapa frame awal tiap track; begitu diputuskan, status pegawai bertahan
+selama `track_id` hidup, jadi tidak ada pemeriksaan warna tiap frame. Track
+yang dikenali pegawai dikirim ke browser lewat pesan `pose` dan diberi label
+abu **"PEGAWAI"** di overlay. Cakupannya sama: dikecualikan dari
+butuh-bantuan, **tetap** dicek untuk jatuh.
+
+**Batas ukuran torso.** Sidik hanya dihitung bila area torso ≥1200 piksel.
+Alasannya terukur: pada klip uji, torso berukuran 37×21 px dari **orang yang
+sama** menghasilkan skor 0,705 / −0,009 / −0,009 / 0,164 di empat frame
+berdekatan — histogram dari patch sekecil itu tidak stabil dan hanya
+menyumbang suara acak ke keputusan. Lebih baik melewati frame tersebut.
+Konsekuensinya: **orang yang jauh dari kamera tidak akan dikenali sebagai
+pegawai**, dan itu memang perilaku yang diinginkan — lebih baik tidak
+memutuskan daripada memutuskan dari data yang tidak memadai. Batas ini tidak
+berlaku saat registrasi, jadi foto seragam kecil tetap bisa didaftarkan.
 
 ---
 

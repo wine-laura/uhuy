@@ -61,6 +61,13 @@ DEFAULT = {
     "seragam_rasio_setuju": 0.5,
     # Confidence keypoint minimum agar kotak torso dianggap sah.
     "seragam_min_conf": 0.30,
+    # Luas minimum patch torso (piksel) agar histogramnya bermakna.
+    # Orang yang jauh dari kamera menghasilkan torso sangat kecil; sidik dari
+    # patch seperti itu tidak stabil antar-frame — terukur pada klip uji, torso
+    # 37x21 px memberi skor 0,705 / -0,009 / -0,009 / 0,164 untuk ORANG YANG
+    # SAMA di empat frame berdekatan. Lebih baik melewati frame itu daripada
+    # menyumbang suara acak ke keputusan pegawai.
+    "seragam_min_area": 1200,
     # Aktif/nonaktif fitur exclude pegawai.
     "seragam_aktif": False,
 }
@@ -100,7 +107,7 @@ def kotak_torso(kp: np.ndarray, w: int, h: int, min_conf: float = 0.30):
     return (x0, y0, x1, y1)
 
 
-def signature_dari_patch(patch: np.ndarray) -> dict | None:
+def signature_dari_patch(patch: np.ndarray, min_area: int = 0) -> dict | None:
     """
     Hitung "sidik seragam" dari potongan gambar BGR.
 
@@ -113,6 +120,10 @@ def signature_dari_patch(patch: np.ndarray) -> dict | None:
                    (menangkap garis/blok horizontal tanpa mendeteksi logo)
     """
     if patch is None or patch.size == 0 or patch.shape[0] < 4 or patch.shape[1] < 4:
+        return None
+    # Patch terlalu kecil menghasilkan histogram yang tidak stabil antar-frame
+    # (lihat DEFAULT["seragam_min_area"]). Dilewati, bukan dipaksakan.
+    if min_area > 0 and patch.shape[0] * patch.shape[1] < min_area:
         return None
 
     hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)

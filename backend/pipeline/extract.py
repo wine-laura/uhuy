@@ -201,7 +201,11 @@ def extract_poses(video_path: str, cfg: dict, camera_type: str = "lorong") -> di
                     kotak = UNI.kotak_torso(kps, frame_w, frame_h, sig_min_conf)
                     if kotak is not None:
                         x0, y0, x1, y1 = kotak
-                        sig = UNI.signature_dari_patch(frame_img[y0:y1, x0:x1])
+                        sig = UNI.signature_dari_patch(
+                            frame_img[y0:y1, x0:x1],
+                            min_area=int(cfg.get("seragam_min_area",
+                                                 UNI.DEFAULT["seragam_min_area"])),
+                        )
                         if sig is not None:
                             sig_per_track.setdefault(track_id, []).append(sig)
 

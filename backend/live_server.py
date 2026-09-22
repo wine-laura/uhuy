@@ -36,6 +36,7 @@ import numpy as np
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from pipeline import thresholds as TH
+from pipeline import uniform as UNI
 from pipeline.geometry import INTERACTION_CLASS_NAMES
 from production.buffer import TrackWindowBuffer
 from production.worker import muat_yolo
@@ -63,6 +64,16 @@ INSPECT_THRESH = float(os.getenv("INSPECT_THRESH", 0.50))
 # sini adalah syarat stabil + satu tangan + bukan meraih rak.
 ANGKAT_AKTIF      = os.getenv("ANGKAT_AKTIF", "1").lower() in ("1", "true", "yes", "on")
 ANGKAT_MIN_DURASI = float(os.getenv("ANGKAT_MIN_DURASI", 1.2))
+
+# Exclude pegawai via seragam. Hanya jalan bila toko sudah mendaftarkan seragam
+# (lihat POST /seragam) — tanpa itu tidak ada yang bisa dicocokkan.
+# Seperti di jalur unggah-klip: tanda pegawai HANYA mengecualikan dari
+# butuh-bantuan, TIDAK PERNAH dari deteksi jatuh.
+SERAGAM_FRAME_CEK = int(os.getenv("SERAGAM_FRAME_CEK", 8))
+PROFIL_SERAGAM = os.getenv(
+    "SAPA_PROFIL_SERAGAM",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "seragam.json"),
+)
 
 # Jendela analisis dalam DETIK. Browser mengirim frame ~5fps, tapi laju itu
 # bergoyang mengikuti beban perangkat klien — menyimpan "45 frame terakhir"
@@ -105,7 +116,8 @@ def _pose_track(yolo, frame: np.ndarray) -> dict:
     return keluaran
 
 
-def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head) -> list:
+def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head,
+                       ini_pegawai: bool = False) -> list:
     """
     Inferensi satu jendela satu orang. Sepenuhnya SINKRON — dipanggil lewat
     run_in_executor lalu hasilnya dikirim dari konteks async pemanggil.
@@ -155,8 +167,11 @@ def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head) -> lis
             })
 
     # ── Kepala Interaksi — dimatikan untuk kamera lorong ──────────────────────
+    # CAKUPAN: pegawai dikecualikan dari butuh-bantuan saja. Blok Kepala Jatuh
+    # di atas sengaja TIDAK memeriksa ini_pegawai — pegawai yang jatuh tetap
+    # keadaan darurat.
     label_aksi = None
-    if camera_type != "lorong" and interaction_head is not None:
+    if camera_type != "lorong" and interaction_head is not None and not ini_pegawai:
         x = torch.from_numpy(masukan["interaction_input"][-1:])
         proba = predict_proba(interaction_head, x)
         label_aksi = INTERACTION_CLASS_NAMES[int(proba[0].argmax())]
@@ -175,7 +190,7 @@ def _inferensi_jendela(jendela, camera_type, fall_head, interaction_head) -> lis
     # Sinyal AKTIF: permintaan eksplisit, prioritas lebih tinggi dari dwell.
     # Dipakai di semua jenis kamera — orang bisa minta bantuan di lorong maupun
     # di depan rak.
-    if ANGKAT_AKTIF:
+    if ANGKAT_AKTIF and not ini_pegawai:
         frames_idx = [(i, kp) for i, kp in enumerate(jendela.frames)]
         label_map = (
             {i: label_aksi for i, _ in frames_idx} if label_aksi else None
@@ -250,6 +265,15 @@ async def ws_live(websocket: WebSocket):
         await websocket.close()
         return
 
+    # ── Seragam pegawai (per sesi) ───────────────────────────────────────────
+    # Dimuat sekali saat sesi dibuka. Kalau toko belum mendaftarkan seragam,
+    # daftarnya kosong dan seluruh jalur ini otomatis tidak aktif.
+    daftar_seragam = UNI.muat_seragam(PROFIL_SERAGAM)
+    sig_track: dict = {}     # {track_id: [signature, ...]} frame-frame awal
+    status_pegawai: dict = {}  # {track_id: bool} — sekali diputuskan, tetap
+    if daftar_seragam:
+        logger.info(f"[live] {len(daftar_seragam)} seragam terdaftar — exclude pegawai aktif.")
+
     buf = TrackWindowBuffer(
         window_seconds=WINDOW_SECONDS,
         stride_seconds=STRIDE_SECONDS,
@@ -297,6 +321,40 @@ async def ws_live(websocket: WebSocket):
                 logger.debug(f"[live] Ekstraksi pose gagal: {e}")
                 continue
 
+            # ── Sidik seragam dari area torso ────────────────────────────
+            # Diambil DI SINI karena hanya di sini piksel frame tersedia.
+            # Hanya beberapa frame AWAL tiap track: begitu diputuskan, status
+            # pegawai bertahan selama track_id hidup — tidak ada pemeriksaan
+            # warna tiap frame, jadi beban per frame tetap ringan.
+            if daftar_seragam:
+                h_f, w_f = frame.shape[:2]
+                for tid, kps in track_kps.items():
+                    if tid in status_pegawai:
+                        continue        # sudah diputuskan
+                    if len(sig_track.get(tid, [])) >= SERAGAM_FRAME_CEK:
+                        # Cukup sampel → putuskan sekali, lalu berhenti mengecek.
+                        hasil = UNI.tandai_pegawai(
+                            {tid: sig_track[tid]}, daftar_seragam, {}
+                        )
+                        status_pegawai[tid] = bool(hasil[tid]["pegawai"])
+                        if status_pegawai[tid]:
+                            logger.info(
+                                f"[live] track={tid} dikenali PEGAWAI "
+                                f"(skor {hasil[tid]['skor']}) — dikecualikan dari "
+                                f"butuh-bantuan, tetap dicek jatuh."
+                            )
+                        sig_track.pop(tid, None)
+                        continue
+                    kotak = UNI.kotak_torso(kps, w_f, h_f)
+                    if kotak is not None:
+                        x0, y0, x1, y1 = kotak
+                        sig = UNI.signature_dari_patch(
+                            frame[y0:y1, x0:x1],
+                            min_area=UNI.DEFAULT["seragam_min_area"],
+                        )
+                        if sig is not None:
+                            sig_track.setdefault(tid, []).append(sig)
+
             # Push ke buffer dengan stempel waktu dari klien
             for tid, kps in track_kps.items():
                 buf.push(tid, kps, t_now)
@@ -310,6 +368,8 @@ async def ws_live(websocket: WebSocket):
                 "type":   "pose",
                 "t":      round(t_now, 3),
                 "tracks": tracks_json,
+                # Track yang dikenali pegawai — untuk label berbeda di overlay.
+                "pegawai": [int(t) for t, v in status_pegawai.items() if v],
             })
 
             # Inferensi untuk jendela yang siap. Bagian berat dikerjakan di
@@ -319,6 +379,7 @@ async def ws_live(websocket: WebSocket):
                     kejadian = await loop.run_in_executor(
                         None, _inferensi_jendela,
                         jendela, camera_type, fall_head, interaction_head,
+                        bool(status_pegawai.get(jendela.track_id, False)),
                     )
                 except Exception as e:
                     logger.warning(
